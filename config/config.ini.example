@@ -1,0 +1,3 @@
+[AWS]
+mfa_arn = put-aws-arn-here
+s3_bucket_path = connect-output-storage/
