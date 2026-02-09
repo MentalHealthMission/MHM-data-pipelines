@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, Optional
 
-from connect_summary.summary_v2 import load_summary_spec
+import yaml
 
 from .spec import RunSpec, StepSpec
 
@@ -148,28 +148,34 @@ def _collect_summary_v2_metrics(summary_step: StepSpec, *, run_id: str) -> set[s
         overrides["participants"] = summary_step.options["participants"]
 
     try:
-        loaded = load_summary_spec(spec_path, overrides=overrides)
+        loaded = _load_summary_v2_spec(spec_path, overrides=overrides)
     except Exception:
         return set()
 
     metrics: set[str] = set()
-    for feature in loaded.get("feature_defs", []):
+    for feature in loaded.get("feature_defs", loaded.get("features", [])):
         source = str((feature or {}).get("source") or "").strip()
         if source:
             metrics.add(source)
-    for questionnaire in loaded.get("questionnaire_defs", []):
+    for questionnaire in loaded.get("questionnaire_defs", loaded.get("questionnaires", [])):
         file_filter = str((questionnaire or {}).get("file_filter") or "").strip()
         if file_filter:
             metrics.add(file_filter)
-    for slider in loaded.get("slider_defs", []):
+    for slider in loaded.get("slider_defs", loaded.get("questionnaire_sliders", [])):
         file_filter = str((slider or {}).get("file_filter") or "").strip()
         if file_filter:
             metrics.add(file_filter)
-    for histogram in loaded.get("histogram_defs", []):
+    for histogram in loaded.get("histogram_defs", loaded.get("questionnaire_histograms", [])):
         file_filter = str((histogram or {}).get("file_filter") or "").strip()
         if file_filter:
             metrics.add(file_filter)
     return metrics
+
+
+def _load_summary_v2_spec(spec_path: Path, *, overrides: Dict[str, object]) -> Dict[str, object]:
+    raw = yaml.safe_load(spec_path.read_text(encoding="utf-8")) or {}
+    raw.update(overrides)
+    return raw
 
 
 def _relative_days(rule: RefreshRule) -> int:
