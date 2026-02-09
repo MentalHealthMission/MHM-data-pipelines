@@ -8,12 +8,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Dict, Type
 
 from mhm_core.pipeline.plugins.base import PipelineProfilePlugin
-from connect_summary.pipeline.steps.combine_features import CombineFeaturesStep
-from connect_summary.pipeline.steps.derived_features import DerivedFeaturesStep
-from connect_summary.pipeline.steps.ontology_reason import OntologyReasonStep
-from connect_summary.pipeline.steps.ontology_select import OntologySelectStep
-from connect_summary.pipeline.steps.ontology_unify import OntologyUnifyStep
-from connect_summary.pipeline.steps.publish import PublishStep
+from mhm_core.pipeline.steps.combine_features import CombineFeaturesStep
+from mhm_core.pipeline.steps.derived_features import DerivedFeaturesStep
+from mhm_core.pipeline.steps.ontology_reason import OntologyReasonStep
+from mhm_core.pipeline.steps.ontology_select import OntologySelectStep
+from mhm_core.pipeline.steps.ontology_unify import OntologyUnifyStep
+from mhm_core.pipeline.steps.publish import PublishStep
 
 if TYPE_CHECKING:  # pragma: no cover
     from mhm_core.pipeline.steps.base import PipelineStep
