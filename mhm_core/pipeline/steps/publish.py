@@ -12,7 +12,7 @@ import tarfile
 from botocore.exceptions import ClientError
 
 from .base import PipelineStep
-from ..context import RunContext, ensure_participant_manifest, ensure_summary_manifest
+from ..context import RunContext, active_participants, ensure_participant_manifest, ensure_summary_manifest
 from ..manifest import (
     MetricWatermark,
     ParticipantManifest,
@@ -40,10 +40,7 @@ class PublishStep(PipelineStep):
 
         self.log(context, "Uploading outputs to S3")
 
-        if context.current_participant:
-            participants = [context.current_participant]
-        else:
-            participants = list(context.participant_sites.keys())
+        participants = active_participants(context)
 
         for participant_id in participants:
             site = context.participant_sites.get(participant_id)

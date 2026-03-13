@@ -37,6 +37,7 @@ class RunContext:
     start_time: datetime = field(default_factory=datetime.utcnow)
     metrics: Dict[str, object] = field(default_factory=dict)
     participant_sites: Dict[str, str] = field(default_factory=dict)
+    batch_participants: Optional[List[str]] = None
     current_participant: Optional[str] = None
     participant_manifests: Dict[str, ParticipantManifest] = field(default_factory=dict)
     merged_base_prefix: str = "s3://connect-uom/merged-data"
@@ -142,10 +143,21 @@ def ensure_summary_manifest(context: RunContext, participant_id: str) -> Summary
     return context.summary_manifests[participant_id]
 
 
+def active_participants(context: RunContext) -> List[str]:
+    if context.current_participant:
+        return [context.current_participant]
+    if context.batch_participants:
+        return list(context.batch_participants)
+    if context.participant_sites:
+        return list(context.participant_sites.keys())
+    return list(context.spec.iter_participants())
+
+
 __all__ = [
     "RunContext",
     "SummaryState",
     "create_run_context",
+    "active_participants",
     "ensure_participant_manifest",
     "ensure_summary_manifest",
 ]

@@ -8,6 +8,7 @@ import logging
 import shutil
 import sys
 from typing import Optional
+from collections import defaultdict
 
 import boto3
 
@@ -94,19 +95,46 @@ def cmd_run(args: argparse.Namespace) -> int:
     context.summary_manifest_prefix = summary_policy.manifest_prefix
     participants = list(spec.iter_participants())
     context.metrics = {step.name: {} for step in steps}
+    batches = _build_batches(spec, participants, context.participant_sites)
+    total_batches = len(batches)
 
-    for participant_id in participants:
-        context.current_participant = participant_id
-        context.logger.info("Processing participant %s", participant_id)
-        for step in per_participant_steps:
+    for batch_idx, batch in enumerate(batches, start=1):
+        context.batch_participants = list(batch)
+        batch_label = f"batch_{batch_idx:03d}"
+        context.logger.info(
+            "Starting batch %d/%d (%d participants)",
+            batch_idx,
+            total_batches,
+            len(batch),
+        )
+        for participant_id in batch:
+            context.current_participant = participant_id
+            context.logger.info("Processing participant %s", participant_id)
+            for step in per_participant_steps:
+                metrics = step.run(context)
+                context.metrics[step.name][participant_id] = metrics
+
+        context.current_participant = None
+        for step in run_once_steps:
+            context.logger.info(
+                "Running step %s for batch %d/%d (%d participants)",
+                step.name,
+                batch_idx,
+                total_batches,
+                len(batch),
+            )
             metrics = step.run(context)
-            context.metrics[step.name][participant_id] = metrics
+            key = "all" if total_batches == 1 else batch_label
+            if total_batches == 1:
+                context.metrics[step.name][key] = metrics
+            else:
+                context.metrics[step.name][key] = {
+                    "participants": list(batch),
+                    "metrics": metrics,
+                }
 
     context.current_participant = None
-    for step in run_once_steps:
-        context.logger.info("Running step %s (once)", step.name)
-        metrics = step.run(context)
-        context.metrics[step.name]["all"] = metrics
+    context.batch_participants = None
 
     context.logger.info("Pipeline run %s completed.", spec.run_id)
     return 0
@@ -129,6 +157,45 @@ def _maybe_discover_participants(spec: RunSpec, s3_client, *, logger: logging.Lo
     logger.info("Discovered %d participants across %d sites", len(participants), len(set(site_map.values())))
 
 
+def _build_batches(spec: RunSpec, participants: list[str], participant_sites: dict[str, str]) -> list[list[str]]:
+    strategy = getattr(spec.batching, "strategy", "none")
+    max_participants = getattr(spec.batching, "max_participants", None)
+
+    if strategy == "site":
+        grouped: dict[str, list[str]] = defaultdict(list)
+        for participant_id in participants:
+            site = participant_sites.get(participant_id, "")
+            grouped[site].append(participant_id)
+
+        ordered_sites: list[str] = []
+        for site in getattr(spec.source, "sites", []):
+            if site in grouped and site not in ordered_sites:
+                ordered_sites.append(site)
+        for site in sorted(grouped):
+            if site not in ordered_sites:
+                ordered_sites.append(site)
+
+        site_batches = [sorted(grouped[site]) for site in ordered_sites if grouped.get(site)]
+        return _chunk_batches(site_batches, max_participants=max_participants)
+
+    if strategy == "participant_count" and max_participants:
+        return [
+            participants[idx : idx + max_participants]
+            for idx in range(0, len(participants), max_participants)
+        ]
+
+    return [participants]
+
+
+def _chunk_batches(batches: list[list[str]], *, max_participants: int | None) -> list[list[str]]:
+    if not max_participants or max_participants <= 0:
+        return batches
+    chunked: list[list[str]] = []
+    for batch in batches:
+        for idx in range(0, len(batch), max_participants):
+            chunked.append(batch[idx : idx + max_participants])
+    return chunked
+
+
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())
-

@@ -7,7 +7,7 @@ from typing import Dict, List
 import yaml
 
 from .base import PipelineStep
-from ..context import RunContext
+from ..context import RunContext, active_participants
 from ...derived_features.utils import ensure_output_dir
 from ...ontology.config import UnificationFeature
 from ...ontology.unify import merge_unified_outputs, unify_features_for_participant
@@ -54,7 +54,7 @@ class OntologyUnifyStep(PipelineStep):
         output_dir = Path(str(self.options.get("output_dir", context.workspace_dir / "ontology" / "unified")).format(run_id=context.run_id)).expanduser()
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        participants = list(context.spec.iter_participants())
+        participants = active_participants(context)
         processed = 0
         for participant_id in participants:
             site = context.participant_sites.get(participant_id)

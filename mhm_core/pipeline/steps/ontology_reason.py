@@ -14,7 +14,7 @@ import pandas as pd
 import yaml
 
 from .base import PipelineStep
-from ..context import RunContext
+from ..context import RunContext, active_participants
 from ...derived_features.catalog import build_catalog
 from ...derived_features.utils import ensure_output_dir
 from ...ontology.reason import (
@@ -116,7 +116,7 @@ class OntologyReasonStep(PipelineStep):
         rapids_output_index = _build_rapids_output_index(context=context)
         emit_trace_graph = bool(self.options.get("trace_graph", True))
 
-        participants = list(context.spec.iter_participants())
+        participants = active_participants(context)
         processed = 0
         for participant_id in participants:
             unified_path = unified_dir / participant_id / "unified_features.csv"

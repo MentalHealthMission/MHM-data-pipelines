@@ -73,6 +73,24 @@ class WorkspaceConfig:
 
 
 @dataclass
+class BatchingConfig:
+    strategy: str = "none"
+    max_participants: Optional[int] = None
+
+    @classmethod
+    def from_dict(cls, data: Optional[Mapping[str, Any]]) -> "BatchingConfig":
+        if not data:
+            return cls()
+        strategy = str(data.get("strategy", "none")).strip().lower() or "none"
+        max_participants_raw = data.get("max_participants")
+        try:
+            max_participants = int(max_participants_raw) if max_participants_raw is not None else None
+        except (TypeError, ValueError):
+            max_participants = None
+        return cls(strategy=strategy, max_participants=max_participants)
+
+
+@dataclass
 class OutputsConfig:
     merged_prefix: str
     summary_prefix: str
@@ -160,6 +178,7 @@ class RunSpec:
     source: SourceConfig
     filters: FiltersConfig
     workspace: WorkspaceConfig
+    batching: BatchingConfig
     outputs: OutputsConfig
     processing: ProcessingConfig
     publishing: PublishingConfig
@@ -174,6 +193,7 @@ class RunSpec:
             source=SourceConfig.from_dict(data.get("source", {})),
             filters=FiltersConfig.from_dict(data.get("filters")),
             workspace=WorkspaceConfig.from_dict(data.get("workspace", {})),
+            batching=BatchingConfig.from_dict(data.get("batching")),
             outputs=OutputsConfig.from_dict(data.get("outputs", {})),
             processing=ProcessingConfig.from_dict(data.get("processing", {})),
             publishing=PublishingConfig.from_dict(data.get("publishing", {})),
@@ -247,6 +267,15 @@ def validate_spec(spec: RunSpec) -> List[str]:
     if shared:
         errors.append(f"metrics cannot be both included and excluded: {sorted(shared)}")
 
+    batching_strategy = spec.batching.strategy
+    if batching_strategy not in {"none", "site", "participant_count"}:
+        errors.append("batching.strategy must be one of: none, site, participant_count")
+    if batching_strategy == "participant_count":
+        if spec.batching.max_participants is None or spec.batching.max_participants <= 0:
+            errors.append("batching.max_participants must be a positive integer when batching.strategy=participant_count")
+    if spec.batching.max_participants is not None and spec.batching.max_participants <= 0:
+        errors.append("batching.max_participants must be positive when provided")
+
     return errors
 
 
@@ -282,6 +311,7 @@ __all__ = [
     "SourceConfig",
     "FiltersConfig",
     "WorkspaceConfig",
+    "BatchingConfig",
     "OutputsConfig",
     "ProcessingConfig",
     "PublishingConfig",

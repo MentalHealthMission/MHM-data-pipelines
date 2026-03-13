@@ -7,7 +7,7 @@ from typing import Dict
 import sys
 
 from .base import PipelineStep
-from ..context import RunContext
+from ..context import RunContext, active_participants
 
 
 class CombineFeaturesStep(PipelineStep):
@@ -31,6 +31,8 @@ class CombineFeaturesStep(PipelineStep):
             participants_arg = ",".join(str(pid) for pid in participants if str(pid).strip())
         elif isinstance(participants, str) and participants.strip():
             participants_arg = participants.strip()
+        else:
+            participants_arg = ",".join(active_participants(context))
 
         rapids_glob = str(self.options.get("rapids_glob", "rapids_*.csv"))
         derived_glob = str(self.options.get("derived_glob", "*.csv"))

@@ -8,7 +8,7 @@ from typing import Dict, List, Optional
 import yaml
 
 from .base import PipelineStep
-from ..context import RunContext
+from ..context import RunContext, active_participants
 from ...derived_features.runner import run_derived_features_for_participant
 from ...derived_features.registry import build_derived_spec_from_root, build_derived_spec_from_registry
 
@@ -134,7 +134,7 @@ class DerivedFeaturesStep(PipelineStep):
         elif isinstance(participants, str) and participants.strip():
             participant_ids = [pid.strip() for pid in participants.split(",") if pid.strip()]
         else:
-            participant_ids = list(context.spec.iter_participants())
+            participant_ids = active_participants(context)
 
         results: Dict[str, object] = {}
         for participant_id in participant_ids:
