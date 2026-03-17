@@ -67,11 +67,7 @@ def create_run_context(spec: RunSpec, *, boto3_session: Optional[boto3.session.S
     summary_dir = run_dir / "summary"
     logs_dir = run_dir / "logs"
 
-    merged_prefix = spec.outputs.merged_prefix
-    merged_base_prefix = merged_prefix
-    if "{site}" in merged_prefix:
-        merged_base_prefix = merged_prefix.split("{site}", 1)[0]
-    merged_base_prefix = merged_base_prefix.rstrip("/") or merged_base_prefix
+    merged_base_prefix = resolve_output_base_prefix(spec.outputs.merged_prefix, run_id=spec.run_id)
 
     context = RunContext(
         spec=spec,
@@ -107,6 +103,27 @@ def create_run_context(spec: RunSpec, *, boto3_session: Optional[boto3.session.S
         context.logger.info("[spec] Discovered %d participants via discover_all", len(participants))
 
     return context
+
+
+def resolve_output_base_prefix(template: str, *, run_id: str) -> str:
+    rendered = template.format(
+        run_id=run_id,
+        site="{site}",
+        participant_id="{participant_id}",
+        participant="{participant}",
+    )
+    if "{site}" in rendered:
+        rendered = rendered.split("{site}", 1)[0]
+    return rendered.rstrip("/") or rendered
+
+
+def resolve_output_prefix(template: str, *, run_id: str) -> str:
+    return template.format(
+        run_id=run_id,
+        site="",
+        participant_id="",
+        participant="",
+    ).rstrip("/")
 
 
 def ensure_participant_manifest(context: RunContext, participant_id: str) -> ParticipantManifest:
@@ -160,4 +177,6 @@ __all__ = [
     "active_participants",
     "ensure_participant_manifest",
     "ensure_summary_manifest",
+    "resolve_output_base_prefix",
+    "resolve_output_prefix",
 ]

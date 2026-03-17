@@ -12,7 +12,7 @@ from collections import defaultdict
 
 import boto3
 
-from .context import create_run_context
+from .context import create_run_context, resolve_output_prefix
 from .discovery import discover_participants
 from .refresh_plan import build_refresh_plan
 from .spec import RunSpec, load_spec, validate_spec
@@ -92,7 +92,13 @@ def cmd_run(args: argparse.Namespace) -> int:
     refresh_plan, summary_policy = build_refresh_plan(spec)
     context.refresh_plan = refresh_plan
     context.summary_cache_policy = summary_policy
-    context.summary_manifest_prefix = summary_policy.manifest_prefix
+    if summary_policy.manifest_prefix:
+        context.summary_manifest_prefix = resolve_output_prefix(
+            summary_policy.manifest_prefix,
+            run_id=spec.run_id,
+        )
+    else:
+        context.summary_manifest_prefix = None
     participants = list(spec.iter_participants())
     context.metrics = {step.name: {} for step in steps}
     batches = _build_batches(spec, participants, context.participant_sites)
