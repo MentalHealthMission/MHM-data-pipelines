@@ -76,6 +76,7 @@ class WorkspaceConfig:
 class BatchingConfig:
     strategy: str = "none"
     max_participants: Optional[int] = None
+    resume_completed: bool = False
 
     @classmethod
     def from_dict(cls, data: Optional[Mapping[str, Any]]) -> "BatchingConfig":
@@ -87,7 +88,12 @@ class BatchingConfig:
             max_participants = int(max_participants_raw) if max_participants_raw is not None else None
         except (TypeError, ValueError):
             max_participants = None
-        return cls(strategy=strategy, max_participants=max_participants)
+        resume_completed = bool(data.get("resume_completed", False))
+        return cls(
+            strategy=strategy,
+            max_participants=max_participants,
+            resume_completed=resume_completed,
+        )
 
 
 @dataclass

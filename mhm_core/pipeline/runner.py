@@ -11,6 +11,7 @@ from typing import Optional
 from collections import defaultdict
 
 import boto3
+from botocore.exceptions import ClientError
 
 from .context import create_run_context, resolve_output_prefix
 from .discovery import discover_participants
@@ -100,9 +101,15 @@ def cmd_run(args: argparse.Namespace) -> int:
     else:
         context.summary_manifest_prefix = None
     participants = list(spec.iter_participants())
+    participants = _filter_completed_participants(context, participants)
+    spec.source.participants = list(participants)
     context.metrics = {step.name: {} for step in steps}
     batches = _build_batches(spec, participants, context.participant_sites)
     total_batches = len(batches)
+
+    if not batches:
+        context.logger.info("No participants remain after resume filtering; nothing to do.")
+        return 0
 
     for batch_idx, batch in enumerate(batches, start=1):
         context.batch_participants = list(batch)
@@ -201,6 +208,81 @@ def _chunk_batches(batches: list[list[str]], *, max_participants: int | None) ->
         for idx in range(0, len(batch), max_participants):
             chunked.append(batch[idx : idx + max_participants])
     return chunked
+
+
+def _filter_completed_participants(context, participants: list[str]) -> list[str]:
+    if not getattr(context.spec.batching, "resume_completed", False):
+        return participants
+    if not participants:
+        return participants
+    if not context.merged_base_prefix.startswith("s3://"):
+        context.logger.info("[resume   ] merged base prefix is not S3-backed; skipping resume filter")
+        return participants
+
+    participants_by_site: dict[str, set[str]] = defaultdict(set)
+    unknown_site_count = 0
+    for participant_id in participants:
+        site = context.participant_sites.get(participant_id)
+        if not site:
+            unknown_site_count += 1
+            continue
+        participants_by_site[site].add(participant_id)
+
+    bucket, key_prefix = _split_s3_uri(context.merged_base_prefix)
+    paginator = context.s3_client.get_paginator("list_objects_v2")
+    completed: set[str] = set()
+
+    for site, site_participants in participants_by_site.items():
+        site_prefix = f"{key_prefix.rstrip('/')}/{site}/"
+        try:
+            for page in paginator.paginate(Bucket=bucket, Prefix=site_prefix):
+                for obj in page.get("Contents", []):
+                    key = obj.get("Key", "")
+                    if not key.endswith("/manifest.json"):
+                        continue
+                    rel = key[len(site_prefix) :]
+                    participant_id = rel.split("/", 1)[0].strip("/")
+                    if participant_id in site_participants:
+                        completed.add(participant_id)
+        except ClientError as exc:
+            context.logger.warning(
+                "[resume   ] Failed listing published manifests under s3://%s/%s: %s",
+                bucket,
+                site_prefix,
+                exc,
+            )
+
+    if unknown_site_count:
+        context.logger.info(
+            "[resume   ] %d participants have unknown site mapping and will not be skipped",
+            unknown_site_count,
+        )
+
+    if completed:
+        context.logger.info(
+            "[resume   ] Skipping %d participants with published manifests under %s",
+            len(completed),
+            context.merged_base_prefix,
+        )
+    else:
+        context.logger.info(
+            "[resume   ] No published participant manifests found under %s",
+            context.merged_base_prefix,
+        )
+
+    remaining = [participant_id for participant_id in participants if participant_id not in completed]
+    context.logger.info("[resume   ] %d participants remain to process", len(remaining))
+    return remaining
+
+
+def _split_s3_uri(uri: str) -> tuple[str, str]:
+    if not uri.startswith("s3://"):
+        raise ValueError(f"Expected s3:// URI, got {uri}")
+    remainder = uri[len("s3://") :]
+    bucket, _, key = remainder.partition("/")
+    if not bucket:
+        raise ValueError(f"Missing bucket in S3 URI: {uri}")
+    return bucket, key
 
 
 if __name__ == "__main__":  # pragma: no cover
