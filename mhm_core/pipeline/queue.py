@@ -13,6 +13,7 @@ PRIORITY_RANK = {
     "medium": 1,
     "high": 2,
     "urgent": 3,
+    "ludicrous": 4,
 }
 STATE_RANK = {
     "pending": 0,
@@ -63,16 +64,30 @@ def list_specs(s3_client, queue_prefix: str, *, states: Iterable[str]) -> list[Q
     return entries
 
 
-def select_next_spec(s3_client, queue_prefix: str) -> Optional[QueueEntry]:
-    entries = list_specs(s3_client, queue_prefix, states=("pending", "suspended"))
+def select_next_spec(
+    s3_client,
+    queue_prefix: str,
+    *,
+    states: Iterable[str] = ("pending", "suspended"),
+    minimum_priority: str | None = None,
+) -> Optional[QueueEntry]:
+    entries = list_specs(s3_client, queue_prefix, states=states)
+    if minimum_priority:
+        threshold = PRIORITY_RANK[normalize_priority(minimum_priority)]
+        entries = [entry for entry in entries if PRIORITY_RANK[entry.priority] >= threshold]
     if not entries:
         return None
     return _sort_entries(entries)[0]
 
 
 def has_pending_urgent(s3_client, queue_prefix: str) -> bool:
+    return has_pending_priority(s3_client, queue_prefix, minimum_priority="urgent")
+
+
+def has_pending_priority(s3_client, queue_prefix: str, *, minimum_priority: str) -> bool:
     pending = list_specs(s3_client, queue_prefix, states=("pending",))
-    return any(entry.priority == "urgent" for entry in pending)
+    threshold = PRIORITY_RANK[normalize_priority(minimum_priority)]
+    return any(PRIORITY_RANK[entry.priority] >= threshold for entry in pending)
 
 
 def split_s3_uri(uri: str) -> tuple[str, str]:
@@ -106,6 +121,7 @@ def _ensure_utc(value: datetime) -> datetime:
 __all__ = [
     "PRIORITY_RANK",
     "QueueEntry",
+    "has_pending_priority",
     "has_pending_urgent",
     "list_specs",
     "normalize_priority",

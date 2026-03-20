@@ -238,8 +238,8 @@ def validate_spec(spec: RunSpec) -> List[str]:
         errors.append("run_id must be provided")
     if not spec.profile:
         errors.append("profile must be provided")
-    if spec.priority not in {"low", "medium", "high", "urgent"}:
-        errors.append("priority must be one of: low, medium, high, urgent")
+    if spec.priority not in {"low", "medium", "high", "urgent", "ludicrous"}:
+        errors.append("priority must be one of: low, medium, high, urgent, ludicrous")
     if not spec.source.bucket:
         errors.append("source.bucket must be provided")
     if not spec.source.prefix:

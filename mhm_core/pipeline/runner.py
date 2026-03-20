@@ -17,7 +17,7 @@ from botocore.exceptions import ClientError
 
 from .context import create_run_context, resolve_output_prefix
 from .discovery import discover_participants
-from .queue import has_pending_urgent
+from .queue import PRIORITY_RANK, select_next_spec
 from .refresh_plan import build_refresh_plan
 from .spec import RunSpec, load_spec, validate_spec
 from .steps import build_steps
@@ -300,12 +300,27 @@ def _split_s3_uri(uri: str) -> tuple[str, str]:
 
 
 def _should_suspend(context, queue_prefix: str, last_suspend_probe: float) -> bool:
-    if context.spec.priority == "urgent":
+    if context.spec.priority == "ludicrous":
         return False
     now = time.monotonic()
     if now - last_suspend_probe < SUSPEND_CHECK_INTERVAL_SECONDS:
         return False
-    if has_pending_urgent(context.s3_client, queue_prefix):
+    next_entry = select_next_spec(context.s3_client, queue_prefix, states=("pending",))
+    if next_entry is None:
+        return False
+    if next_entry.priority not in {"urgent", "ludicrous"}:
+        return False
+    current_rank = PRIORITY_RANK[context.spec.priority]
+    next_rank = PRIORITY_RANK[next_entry.priority]
+    if next_rank <= current_rank:
+        return False
+    if next_entry.priority == "ludicrous":
+        context.logger.info(
+            "[suspend  ] Pending ludicrous run detected; suspending %s at safe checkpoint",
+            context.run_id,
+        )
+        return True
+    if next_entry.priority == "urgent":
         context.logger.info(
             "[suspend  ] Pending urgent run detected; suspending %s at safe checkpoint",
             context.run_id,
