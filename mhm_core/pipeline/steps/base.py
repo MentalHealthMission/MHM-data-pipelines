@@ -18,10 +18,14 @@ class PipelineStep(ABC):
         options: Optional[Dict[str, Any]] = None,
         *,
         run_per_participant: bool = True,
+        suspend_checkpoint: str,
     ) -> None:
         self.name = name
         self.options = options or {}
         self.run_per_participant = run_per_participant
+        if suspend_checkpoint not in {"participant", "batch", "step"}:
+            raise ValueError(f"Invalid suspend checkpoint for step {name}: {suspend_checkpoint}")
+        self.suspend_checkpoint = suspend_checkpoint
 
     def __call__(self, context: RunContext) -> Dict[str, Any]:
         return self.run(context)
@@ -56,7 +60,7 @@ class NoOpStep(PipelineStep):
     """Placeholder step until full implementation lands."""
 
     def __init__(self, name: str, options: Optional[Dict[str, Any]] = None) -> None:
-        super().__init__(name, options)
+        super().__init__(name, options, suspend_checkpoint="step")
 
     def run(self, context: RunContext) -> Dict[str, Any]:
         self.log(context, "Step not yet implemented; skipping.")

@@ -15,7 +15,7 @@ from ...derived_features.registry import build_derived_spec_from_root, build_der
 
 class DerivedFeaturesStep(PipelineStep):
     def __init__(self, options: Dict[str, object]) -> None:
-        super().__init__("derived_features", options, run_per_participant=False)
+        super().__init__("derived_features", options, run_per_participant=False, suspend_checkpoint="step")
 
     def _parse_list(self, value: object) -> Optional[List[str]]:
         if value is None:

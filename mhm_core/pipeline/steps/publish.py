@@ -30,7 +30,7 @@ class UploadResult:
 
 class PublishStep(PipelineStep):
     def __init__(self, options: Dict[str, object]) -> None:
-        super().__init__("publish", options, run_per_participant=False)
+        super().__init__("publish", options, run_per_participant=True, suspend_checkpoint="participant")
 
     def run(self, context: RunContext) -> Dict[str, object]:
         outputs = context.spec.outputs

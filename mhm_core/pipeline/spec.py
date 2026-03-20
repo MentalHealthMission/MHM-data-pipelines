@@ -181,6 +181,7 @@ class RunSpec:
     profile: str
     created_by: str
     created_at: str
+    priority: str
     source: SourceConfig
     filters: FiltersConfig
     workspace: WorkspaceConfig
@@ -196,6 +197,7 @@ class RunSpec:
             profile=str(data.get("profile", "connect")).strip() or "connect",
             created_by=str(data.get("created_by", "")).strip(),
             created_at=str(data.get("created_at", "")).strip(),
+            priority=str(data.get("priority", "medium")).strip().lower() or "medium",
             source=SourceConfig.from_dict(data.get("source", {})),
             filters=FiltersConfig.from_dict(data.get("filters")),
             workspace=WorkspaceConfig.from_dict(data.get("workspace", {})),
@@ -236,6 +238,8 @@ def validate_spec(spec: RunSpec) -> List[str]:
         errors.append("run_id must be provided")
     if not spec.profile:
         errors.append("profile must be provided")
+    if spec.priority not in {"low", "medium", "high", "urgent"}:
+        errors.append("priority must be one of: low, medium, high, urgent")
     if not spec.source.bucket:
         errors.append("source.bucket must be provided")
     if not spec.source.prefix:

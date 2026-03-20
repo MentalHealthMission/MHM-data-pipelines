@@ -5,8 +5,10 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import shutil
 import sys
+import time
 from typing import Optional
 from collections import defaultdict
 
@@ -15,11 +17,14 @@ from botocore.exceptions import ClientError
 
 from .context import create_run_context, resolve_output_prefix
 from .discovery import discover_participants
+from .queue import has_pending_urgent
 from .refresh_plan import build_refresh_plan
 from .spec import RunSpec, load_spec, validate_spec
 from .steps import build_steps
 
 LOG_FORMAT = "%(asctime)s %(levelname)-7s %(name)s | %(message)s"
+SUSPEND_EXIT_CODE = 75
+SUSPEND_CHECK_INTERVAL_SECONDS = 15.0
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -111,6 +116,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         context.logger.info("No participants remain after resume filtering; nothing to do.")
         return 0
 
+    queue_prefix = os.environ.get("QUEUE_PREFIX", "s3://connect-uom/run-specs")
+    last_suspend_probe = 0.0
+
     for batch_idx, batch in enumerate(batches, start=1):
         context.batch_participants = list(batch)
         batch_label = f"batch_{batch_idx:03d}"
@@ -126,6 +134,9 @@ def cmd_run(args: argparse.Namespace) -> int:
             for step in per_participant_steps:
                 metrics = step.run(context)
                 context.metrics[step.name][participant_id] = metrics
+            if _should_suspend(context, queue_prefix, last_suspend_probe):
+                return SUSPEND_EXIT_CODE
+            last_suspend_probe = time.monotonic()
 
         context.current_participant = None
         for step in run_once_steps:
@@ -145,6 +156,9 @@ def cmd_run(args: argparse.Namespace) -> int:
                     "participants": list(batch),
                     "metrics": metrics,
                 }
+            if step.suspend_checkpoint in {"step", "batch"} and _should_suspend(context, queue_prefix, last_suspend_probe):
+                return SUSPEND_EXIT_CODE
+            last_suspend_probe = time.monotonic()
 
     context.current_participant = None
     context.batch_participants = None
@@ -283,6 +297,21 @@ def _split_s3_uri(uri: str) -> tuple[str, str]:
     if not bucket:
         raise ValueError(f"Missing bucket in S3 URI: {uri}")
     return bucket, key
+
+
+def _should_suspend(context, queue_prefix: str, last_suspend_probe: float) -> bool:
+    if context.spec.priority == "urgent":
+        return False
+    now = time.monotonic()
+    if now - last_suspend_probe < SUSPEND_CHECK_INTERVAL_SECONDS:
+        return False
+    if has_pending_urgent(context.s3_client, queue_prefix):
+        context.logger.info(
+            "[suspend  ] Pending urgent run detected; suspending %s at safe checkpoint",
+            context.run_id,
+        )
+        return True
+    return False
 
 
 if __name__ == "__main__":  # pragma: no cover

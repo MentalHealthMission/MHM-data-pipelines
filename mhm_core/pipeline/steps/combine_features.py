@@ -12,7 +12,7 @@ from ..context import RunContext, active_participants
 
 class CombineFeaturesStep(PipelineStep):
     def __init__(self, options: Dict[str, object]) -> None:
-        super().__init__("combine_features", options, run_per_participant=False)
+        super().__init__("combine_features", options, run_per_participant=False, suspend_checkpoint="step")
 
     def run(self, context: RunContext) -> Dict[str, object]:
         rapids_dir = Path(

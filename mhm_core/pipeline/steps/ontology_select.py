@@ -33,7 +33,7 @@ def _coerce_preference(value: object) -> List[str]:
 
 class OntologySelectStep(PipelineStep):
     def __init__(self, options: Dict[str, object]) -> None:
-        super().__init__("ontology_select", options, run_per_participant=False)
+        super().__init__("ontology_select", options, run_per_participant=False, suspend_checkpoint="step")
 
     def run(self, context: RunContext) -> Dict[str, object]:
         unification_path_raw = self.options.get("unification_spec") or self.options.get("unification")

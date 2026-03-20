@@ -30,7 +30,7 @@ from ...ontology.reason import (
 
 class OntologyReasonStep(PipelineStep):
     def __init__(self, options: Dict[str, object]) -> None:
-        super().__init__("ontology_reason", options, run_per_participant=False)
+        super().__init__("ontology_reason", options, run_per_participant=False, suspend_checkpoint="step")
 
     def run(self, context: RunContext) -> Dict[str, object]:
         plan_raw = self.options.get("plan")
