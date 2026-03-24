@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional
+import json
 import re
 import uuid
 
@@ -27,6 +28,7 @@ class SourceConfig:
     participants: List[str]
     discover_all: bool = False
     sites: List[str] = field(default_factory=list)
+    source_state_manifest: str = ""
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "SourceConfig":
@@ -37,7 +39,15 @@ class SourceConfig:
         discover_all = bool(data.get("discover_all", False))
         raw_sites = data.get("sites", [])
         sites = [str(site).strip() for site in raw_sites if str(site).strip()]
-        return cls(bucket=bucket, prefix=prefix, participants=participants, discover_all=discover_all, sites=sites)
+        source_state_manifest = str(data.get("source_state_manifest", "")).strip()
+        return cls(
+            bucket=bucket,
+            prefix=prefix,
+            participants=participants,
+            discover_all=discover_all,
+            sites=sites,
+            source_state_manifest=source_state_manifest,
+        )
 
 
 @dataclass
@@ -101,6 +111,7 @@ class ProvenanceConfig:
     enabled: bool = True
     snapshot_source_state: bool = False
     upload_run_provenance: bool = True
+    parent_dataset_manifest: str = ""
 
     @classmethod
     def from_dict(cls, data: Optional[Mapping[str, Any]]) -> "ProvenanceConfig":
@@ -110,6 +121,7 @@ class ProvenanceConfig:
             enabled=bool(data.get("enabled", True)),
             snapshot_source_state=bool(data.get("snapshot_source_state", False)),
             upload_run_provenance=bool(data.get("upload_run_provenance", True)),
+            parent_dataset_manifest=str(data.get("parent_dataset_manifest", "")).strip(),
         )
 
 
@@ -245,6 +257,7 @@ def load_spec(path: str, *, s3_client: Optional[boto3.client] = None) -> RunSpec
             data = yaml.safe_load(fh)
     if not isinstance(data, MutableMapping):
         raise ValueError("Specification root must be a mapping/dictionary")
+    _resolve_manifest_native_inputs(data, spec_locator=path, s3_client=s3_client)
     return RunSpec.from_dict(data)
 
 
@@ -260,9 +273,9 @@ def validate_spec(spec: RunSpec) -> List[str]:
     if spec.priority not in {"low", "medium", "high", "urgent", "ludicrous"}:
         errors.append("priority must be one of: low, medium, high, urgent, ludicrous")
     if not spec.source.bucket:
-        errors.append("source.bucket must be provided")
+        errors.append("source.bucket must be provided (or resolvable via source.source_state_manifest)")
     if not spec.source.prefix:
-        errors.append("source.prefix must be provided")
+        errors.append("source.prefix must be provided (or resolvable via source.source_state_manifest)")
 
     participants = spec.source.participants
     if not participants and not spec.source.discover_all:
@@ -314,6 +327,107 @@ def _split_s3_uri(uri: str) -> tuple[str, str]:
     if not bucket or not key:
         raise ValueError(f"Invalid S3 URI: {uri}")
     return bucket, key
+
+
+def _resolve_manifest_native_inputs(
+    data: MutableMapping[str, Any],
+    *,
+    spec_locator: str,
+    s3_client,
+) -> None:
+    source = data.get("source")
+    if isinstance(source, MutableMapping):
+        source_state_manifest = str(source.get("source_state_manifest", "")).strip()
+        if source_state_manifest:
+            _apply_source_state_manifest(
+                source,
+                manifest_locator=source_state_manifest,
+                spec_locator=spec_locator,
+                s3_client=s3_client,
+            )
+
+
+def _apply_source_state_manifest(
+    source: MutableMapping[str, Any],
+    *,
+    manifest_locator: str,
+    spec_locator: str,
+    s3_client,
+) -> None:
+    manifest = _load_json_document(manifest_locator, base_locator=spec_locator, s3_client=s3_client)
+    binding = manifest.get("data_root_binding", {}) if isinstance(manifest, dict) else {}
+    locator = str(getattr(binding, "get", lambda *_: "")("locator") if binding else "")
+    if not locator and isinstance(binding, dict):
+        locator = str(binding.get("locator", ""))
+    if locator.startswith("s3://"):
+        bucket, prefix = _split_s3_uri(locator)
+        if not source.get("bucket"):
+            source["bucket"] = bucket
+        if not source.get("prefix"):
+            source["prefix"] = prefix
+
+    if not source.get("sites") or (isinstance(source.get("sites"), list) and not any(str(item).strip() for item in source.get("sites", []))):
+        coverage_locator = _linked_document_locator(manifest, "coverage_summary", base_locator=manifest_locator)
+        if coverage_locator:
+            coverage = _load_json_document(coverage_locator, base_locator=manifest_locator, s3_client=s3_client)
+            sites = []
+            for row in coverage.get("coverage", {}).get("site_summary", []):
+                site = str(row.get("site", "")).strip()
+                if site:
+                    sites.append(site)
+            if sites:
+                source["sites"] = sorted(dict.fromkeys(sites))
+
+    participants = source.get("participants")
+    if (not participants) and not bool(source.get("discover_all", False)):
+        coverage_locator = _linked_document_locator(manifest, "coverage_summary", base_locator=manifest_locator)
+        if coverage_locator:
+            coverage = _load_json_document(coverage_locator, base_locator=manifest_locator, s3_client=s3_client)
+            participant_ids: list[str] = []
+            for row in coverage.get("coverage", {}).get("site_summary", []):
+                participant_ids.extend(str(item).strip() for item in row.get("participants", []) if str(item).strip())
+            if participant_ids:
+                source["participants"] = sorted(dict.fromkeys(participant_ids))
+
+
+def _linked_document_locator(manifest: Mapping[str, Any], document_name: str, *, base_locator: str) -> str:
+    documents = manifest.get("documents", {}) if isinstance(manifest, Mapping) else {}
+    if not isinstance(documents, Mapping):
+        return ""
+    entry = documents.get(document_name, {})
+    if not isinstance(entry, Mapping):
+        return ""
+    locator = str(entry.get("locator", "")).strip()
+    if not locator:
+        return ""
+    return _resolve_relative_locator(locator, base_locator=base_locator)
+
+
+def _load_json_document(locator: str, *, base_locator: str, s3_client) -> Dict[str, Any]:
+    resolved = _resolve_relative_locator(locator, base_locator=base_locator)
+    if resolved.startswith("s3://"):
+        if s3_client is None:
+            s3_client = boto3.client("s3")
+        bucket, key = _split_s3_uri(resolved)
+        obj = s3_client.get_object(Bucket=bucket, Key=key)
+        payload = obj["Body"].read()
+        return json.loads(payload)
+    return json.loads(Path(resolved).expanduser().read_text(encoding="utf-8"))
+
+
+def _resolve_relative_locator(locator: str, *, base_locator: str) -> str:
+    if locator.startswith("s3://"):
+        return locator
+    path = Path(locator).expanduser()
+    if path.is_absolute():
+        return str(path)
+    if base_locator.startswith("s3://"):
+        bucket, key = _split_s3_uri(base_locator)
+        key_prefix = key.rsplit("/", 1)[0] if "/" in key else ""
+        joined = f"{key_prefix}/{locator}".strip("/")
+        return f"s3://{bucket}/{joined}"
+    base_path = Path(base_locator).expanduser()
+    return str((base_path.parent / locator).resolve())
 
 
 def _is_uuid(value: str) -> bool:

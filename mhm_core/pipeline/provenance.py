@@ -24,7 +24,7 @@ def initialize_run_provenance(context) -> None:
         return
     provenance_dir.mkdir(parents=True, exist_ok=True)
 
-    source_state_manifest = ""
+    source_state_manifest = context.spec.source.source_state_manifest or ""
     if getattr(context.spec.provenance, "snapshot_source_state", False):
         source_state_dir = provenance_dir / "source_state"
         source_uri = f"s3://{context.spec.source.bucket}/{context.spec.source.prefix.strip('/')}"
@@ -39,8 +39,10 @@ def initialize_run_provenance(context) -> None:
             layout="raw_source_v1",
             notes=f"Captured for pipeline run {context.run_id}",
         )
-        context.source_state_manifest_path = result["paths"]["dataset_manifest"]
-        source_state_manifest = str(context.source_state_manifest_path)
+        context.source_state_manifest_path = str(result["paths"]["dataset_manifest"])
+        source_state_manifest = context.source_state_manifest_path
+    elif source_state_manifest:
+        context.source_state_manifest_path = source_state_manifest
 
     if context.spec_locator:
         spec_manifest_path = provenance_dir / "pipeline_spec_manifest.json"
@@ -48,6 +50,7 @@ def initialize_run_provenance(context) -> None:
             spec_path=context.spec_locator,
             output_path=spec_manifest_path,
             source_state_manifest=source_state_manifest,
+            parent_dataset_manifest=context.spec.provenance.parent_dataset_manifest,
         )
         context.pipeline_spec_manifest_path = spec_manifest_path
 
@@ -113,9 +116,13 @@ def finalize_run_provenance(
         return None
 
     artifacts, coverage_summary = artifacts_and_coverage(context.published_merged_artifacts)
-    parents = build_parent_document_refs(
-        [str(context.source_state_manifest_path)] if context.source_state_manifest_path else []
-    )
+    parents: List[Dict[str, str]] = []
+    if context.source_state_manifest_path:
+        ref = document_reference_from_path(str(context.source_state_manifest_path), role="source_state_manifest", relation="derived_from")
+        if ref is not None:
+            parents.append(ref.to_dict())
+    if context.spec.provenance.parent_dataset_manifest:
+        parents.extend(build_parent_document_refs([context.spec.provenance.parent_dataset_manifest]))
     control_documents: List[Dict[str, str]] = []
     for locator, role in [
         (str(context.pipeline_spec_manifest_path) if context.pipeline_spec_manifest_path else "", "pipeline_spec_manifest"),

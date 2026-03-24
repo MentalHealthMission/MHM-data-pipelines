@@ -50,7 +50,7 @@ class RunContext:
     spec_locator: str = ""
     provenance_dir: Optional[Path] = None
     pipeline_spec_manifest_path: Optional[Path] = None
-    source_state_manifest_path: Optional[Path] = None
+    source_state_manifest_path: Optional[str] = None
     published_merged_artifacts: List[Dict[str, Any]] = field(default_factory=list)
     logger: logging.Logger = field(init=False)
 
