@@ -97,6 +97,23 @@ class BatchingConfig:
 
 
 @dataclass
+class ProvenanceConfig:
+    enabled: bool = True
+    snapshot_source_state: bool = False
+    upload_run_provenance: bool = True
+
+    @classmethod
+    def from_dict(cls, data: Optional[Mapping[str, Any]]) -> "ProvenanceConfig":
+        if not data:
+            return cls()
+        return cls(
+            enabled=bool(data.get("enabled", True)),
+            snapshot_source_state=bool(data.get("snapshot_source_state", False)),
+            upload_run_provenance=bool(data.get("upload_run_provenance", True)),
+        )
+
+
+@dataclass
 class OutputsConfig:
     merged_prefix: str
     summary_prefix: str
@@ -186,6 +203,7 @@ class RunSpec:
     filters: FiltersConfig
     workspace: WorkspaceConfig
     batching: BatchingConfig
+    provenance: ProvenanceConfig
     outputs: OutputsConfig
     processing: ProcessingConfig
     publishing: PublishingConfig
@@ -202,6 +220,7 @@ class RunSpec:
             filters=FiltersConfig.from_dict(data.get("filters")),
             workspace=WorkspaceConfig.from_dict(data.get("workspace", {})),
             batching=BatchingConfig.from_dict(data.get("batching")),
+            provenance=ProvenanceConfig.from_dict(data.get("provenance")),
             outputs=OutputsConfig.from_dict(data.get("outputs", {})),
             processing=ProcessingConfig.from_dict(data.get("processing", {})),
             publishing=PublishingConfig.from_dict(data.get("publishing", {})),

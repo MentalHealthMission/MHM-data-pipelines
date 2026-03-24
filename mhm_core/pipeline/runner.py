@@ -18,6 +18,7 @@ from botocore.exceptions import ClientError
 from .context import create_run_context, resolve_output_prefix
 from .discovery import discover_participants
 from .queue import PRIORITY_RANK, select_next_spec
+from .provenance import initialize_run_provenance
 from .refresh_plan import build_refresh_plan
 from .spec import RunSpec, load_spec, validate_spec
 from .steps import build_steps
@@ -88,9 +89,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         run_dir = spec.workspace.resolve_run_path(spec.run_id)
         shutil.rmtree(run_dir, ignore_errors=True)
 
-    context = create_run_context(spec, boto3_session=session)
+    context = create_run_context(spec, boto3_session=session, spec_locator=args.spec)
     context.logger.info("Starting pipeline run %s", spec.run_id)
     context.participant_sites.update(getattr(spec.source, "site_map", {}))
+    initialize_run_provenance(context)
 
     steps = build_steps(spec)
     per_participant_steps = [step for step in steps if getattr(step, "run_per_participant", True)]
