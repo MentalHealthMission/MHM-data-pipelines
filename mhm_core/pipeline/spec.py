@@ -112,6 +112,7 @@ class ProvenanceConfig:
     snapshot_source_state: bool = False
     upload_run_provenance: bool = True
     parent_dataset_manifest: str = ""
+    apply_parent_history_update: bool = False
 
     @classmethod
     def from_dict(cls, data: Optional[Mapping[str, Any]]) -> "ProvenanceConfig":
@@ -122,6 +123,7 @@ class ProvenanceConfig:
             snapshot_source_state=bool(data.get("snapshot_source_state", False)),
             upload_run_provenance=bool(data.get("upload_run_provenance", True)),
             parent_dataset_manifest=str(data.get("parent_dataset_manifest", "")).strip(),
+            apply_parent_history_update=bool(data.get("apply_parent_history_update", False)),
         )
 
 
