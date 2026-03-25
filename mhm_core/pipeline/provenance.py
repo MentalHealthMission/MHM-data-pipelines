@@ -157,6 +157,9 @@ def finalize_run_provenance(
             "merged_base_prefix": context.merged_base_prefix,
         },
         parents=parents,
+        source_state_documents=_source_state_documents(context),
+        source_state_as_of=_source_state_as_of(context),
+        built_at=str(_load_json_document(run_manifest_path).get("generated_at", "")) or "",
         control_documents=control_documents,
     )
     bundle_dir = provenance_dir / "published_merged_dataset"
@@ -306,3 +309,21 @@ def _load_json_document(path: Path) -> Dict[str, object]:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return {}
+
+
+def _source_state_documents(context) -> List[Dict[str, str]]:
+    locator = str(context.source_state_manifest_path or "").strip()
+    if not locator:
+        return []
+    ref = document_reference_from_path(locator, role="source_state_manifest", relation="observed_from")
+    return [ref.to_dict()] if ref is not None else []
+
+
+def _source_state_as_of(context) -> str:
+    locator = str(context.source_state_manifest_path or "").strip()
+    if not locator:
+        return ""
+    payload = _load_json_document(Path(locator).expanduser())
+    if payload.get("state_coordinates", {}).get("source_state_as_of"):
+        return str(payload["state_coordinates"]["source_state_as_of"])
+    return str(payload.get("generated_at", ""))
