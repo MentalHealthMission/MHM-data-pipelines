@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 import logging
+from typing import Any
 
 import boto3
 
@@ -46,6 +47,11 @@ class RunContext:
     summary_manifest_prefix: Optional[str] = None
     summary_manifests: Dict[str, SummaryManifest] = field(default_factory=dict)
     summary_outputs: Dict[str, SummaryState] = field(default_factory=dict)
+    spec_locator: str = ""
+    provenance_dir: Optional[Path] = None
+    pipeline_spec_manifest_path: Optional[Path] = None
+    source_state_manifest_path: Optional[str] = None
+    published_merged_artifacts: List[Dict[str, Any]] = field(default_factory=list)
     logger: logging.Logger = field(init=False)
 
     def __post_init__(self) -> None:
@@ -55,9 +61,16 @@ class RunContext:
     def ensure_directories(self) -> None:
         for path in (self.workspace_dir, self.raw_dir, self.merged_dir, self.summary_dir, self.logs_dir):
             path.mkdir(parents=True, exist_ok=True)
+        if self.provenance_dir is not None:
+            self.provenance_dir.mkdir(parents=True, exist_ok=True)
 
 
-def create_run_context(spec: RunSpec, *, boto3_session: Optional[boto3.session.Session] = None) -> RunContext:
+def create_run_context(
+    spec: RunSpec,
+    *,
+    boto3_session: Optional[boto3.session.Session] = None,
+    spec_locator: str = "",
+) -> RunContext:
     session = boto3_session or boto3.session.Session()
     s3_client = session.client("s3")
 
@@ -79,6 +92,8 @@ def create_run_context(spec: RunSpec, *, boto3_session: Optional[boto3.session.S
         logs_dir=logs_dir,
         s3_client=s3_client,
         merged_base_prefix=merged_base_prefix,
+        spec_locator=spec_locator,
+        provenance_dir=logs_dir / "provenance",
     )
     context.ensure_directories()
 

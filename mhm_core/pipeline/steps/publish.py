@@ -19,6 +19,7 @@ from ..manifest import (
     save_participant_manifest,
     write_local_manifest,
 )
+from ..provenance import finalize_run_provenance, record_published_merged_artifact
 from ..summary_manifest import save_summary_manifest, write_local_summary_manifest
 
 
@@ -54,11 +55,27 @@ class PublishStep(PipelineStep):
 
             merged_local = context.merged_dir / site / participant_id
             merged_prefix = outputs.merged_prefix.format(run_id=run_id, site=site, participant_id=participant_id).rstrip("/")
-            upload_stats["merged"], _ = self._upload_tree(context, merged_local, merged_prefix, upload_stats["merged"])
+            upload_stats["merged"], _, merged_uploads = self._upload_tree(
+                context,
+                merged_local,
+                merged_prefix,
+                upload_stats["merged"],
+                collect_uploads=True,
+            )
+            for file_path, s3_uri in merged_uploads:
+                metric = file_path.parent.name
+                record_published_merged_artifact(
+                    context,
+                    site=site,
+                    participant_id=participant_id,
+                    metric=metric,
+                    file_path=file_path,
+                    s3_uri=s3_uri,
+                )
 
             summary_local = context.summary_dir
             summary_prefix = outputs.summary_prefix.format(run_id=run_id, site=site, participant_id=participant_id).rstrip("/")
-            upload_stats["summary"], summary_keys = self._upload_tree(
+            upload_stats["summary"], summary_keys, _ = self._upload_tree(
                 context,
                 summary_local,
                 summary_prefix,
@@ -113,12 +130,12 @@ class PublishStep(PipelineStep):
         metrics_path.write_text(json.dumps(metrics_payload, indent=2), encoding="utf-8")
         logs_prefix = outputs.logs_prefix.format(run_id=run_id, site="", participant_id="").rstrip("/")
         metrics_key = f"{logs_prefix}/metrics.json"
-        upload_stats["logs"] = self._upload_file(context, metrics_path, metrics_key, upload_stats["logs"])
+        upload_stats["logs"], _ = self._upload_file(context, metrics_path, metrics_key, upload_stats["logs"])
 
         rapids_manifest_path = context.logs_dir / "rapids_manifest.json"
         if rapids_manifest_path.exists():
             rapids_key = f"{logs_prefix}/rapids_manifest.json"
-            upload_stats["logs"] = self._upload_file(context, rapids_manifest_path, rapids_key, upload_stats["logs"])
+            upload_stats["logs"], _ = self._upload_file(context, rapids_manifest_path, rapids_key, upload_stats["logs"])
 
         archive_opts = self.options.get("archive", {})
         if archive_opts.get("enabled"):
@@ -139,7 +156,21 @@ class PublishStep(PipelineStep):
         manifest_path = context.logs_dir / "manifest.json"
         manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         manifest_key = outputs.manifest_key.format(run_id=run_id, site="", participant_id="")
-        self._upload_file(context, manifest_path, manifest_key, upload_stats["logs"])
+        upload_stats["logs"], _ = self._upload_file(context, manifest_path, manifest_key, upload_stats["logs"])
+
+        provenance_bundle_dir = finalize_run_provenance(
+            context,
+            run_manifest_path=manifest_path,
+            metrics_path=metrics_path,
+        )
+        if provenance_bundle_dir is not None and context.spec.provenance.upload_run_provenance:
+            provenance_prefix = f"{logs_prefix}/provenance"
+            upload_stats["logs"], _, _ = self._upload_tree(
+                context,
+                provenance_bundle_dir.parent,
+                provenance_prefix,
+                upload_stats["logs"],
+            )
 
         if context.spec.publishing.delete_local_workspace:
             self._cleanup_local(context)
@@ -160,11 +191,12 @@ class PublishStep(PipelineStep):
         *,
         filter_prefix: str = "",
         collect_keys: bool = False,
-    ) -> tuple[UploadResult, List[str]]:
-        s3 = context.s3_client
+        collect_uploads: bool = False,
+    ) -> tuple[UploadResult, List[str], List[tuple[Path, str]]]:
         keys: List[str] = []
+        uploads: List[tuple[Path, str]] = []
         if not root.exists():
-            return result, keys
+            return result, keys, uploads
         for file_path in root.rglob("*"):
             if file_path.is_dir():
                 continue
@@ -172,12 +204,14 @@ class PublishStep(PipelineStep):
                 continue
             rel = file_path.relative_to(root)
             key = f"{prefix}/{rel.as_posix()}"
-            result = self._upload_file(context, file_path, key, result)
+            result, uploaded = self._upload_file(context, file_path, key, result)
             if collect_keys:
                 if not key.startswith("s3://"):
                     key = f"s3://{key}"
                 keys.append(key)
-        return result, keys
+            if collect_uploads and uploaded:
+                uploads.append((file_path, key))
+        return result, keys, uploads
 
     # ------------------------------------------------------------------
     def _refresh_manifest_metrics(self, manifest: ParticipantManifest, merged_root: Path) -> None:
@@ -198,7 +232,7 @@ class PublishStep(PipelineStep):
             manifest.metrics[metric] = existing
 
     # ------------------------------------------------------------------
-    def _upload_file(self, context: RunContext, path: Path, key: str, result: UploadResult) -> UploadResult:
+    def _upload_file(self, context: RunContext, path: Path, key: str, result: UploadResult) -> tuple[UploadResult, bool]:
         s3 = context.s3_client
         if not key.startswith("s3://"):
             raise ValueError(f"S3 key must be an s3:// URI, got {key}")
@@ -208,9 +242,10 @@ class PublishStep(PipelineStep):
             s3.upload_file(str(path), bucket, s3_key)
             result.files += 1
             result.bytes += path.stat().st_size
+            return result, True
         except ClientError as exc:
             context.logger.error("[publish  ] Failed uploading %s -> s3://%s/%s: %s", path, bucket, s3_key, exc)
-        return result
+        return result, False
 
     # ------------------------------------------------------------------
     def _cleanup_participant_local(self, context: RunContext, site: str, participant_id: str) -> None:
@@ -273,7 +308,7 @@ class PublishStep(PipelineStep):
             archive_prefix = custom_prefix.format(run_id=run_id, site="", participant_id="").rstrip("/")
         archive_key = f"{archive_prefix}/{filename}"
         upload_result = UploadResult()
-        upload_result = self._upload_file(context, archive_path, archive_key, upload_result)
+        upload_result, _ = self._upload_file(context, archive_path, archive_key, upload_result)
         return archive_key if upload_result.files else None
 
 
