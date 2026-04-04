@@ -13,6 +13,7 @@ from connect_summary.provenance.manifests import (
     document_reference_from_path,
     write_dataset_manifest_bundle,
 )
+from connect_summary.provenance.dataset_refresh import advance_current_dataset_state_from_inventory_overlay
 from connect_summary.provenance.hashing import add_document_hash
 from connect_summary.provenance.model import LogicalAddress, PROVENANCE_SCHEMA_VERSION, file_mtime_iso
 from connect_summary.provenance.source import artifacts_and_coverage, snapshot_source_state
@@ -67,6 +68,7 @@ def record_published_merged_artifact(
     file_path: Path,
     s3_uri: str,
 ) -> None:
+    relative_locator = "/".join([site, participant_id, metric, file_path.name])
     address = LogicalAddress(
         surface="run-output",
         domain="passive-data",
@@ -91,10 +93,12 @@ def record_published_merged_artifact(
             {
                 "binding_type": "posix_path",
                 "locator": str(file_path),
+                "relative_locator": relative_locator,
             },
             {
                 "binding_type": "s3_object",
                 "locator": s3_uri,
+                "relative_locator": relative_locator,
             },
         ],
     }
@@ -262,6 +266,14 @@ def _write_canonical_dataset_update_event(
             published_ref=published_ref.to_dict(),
             coverage_summary=coverage_summary,
         )
+        _advance_parent_dataset_current_state(
+            context,
+            parent_manifest_locator=parent_manifest_locator,
+            published_dataset_manifest_path=published_dataset_manifest_path,
+            event_path=event_path,
+            run_manifest_path=run_manifest_path,
+            metrics_path=metrics_path,
+        )
     return event_path
 
 
@@ -300,6 +312,59 @@ def _append_parent_dataset_history_event(
         },
     )
     return history_log_path
+
+
+def _advance_parent_dataset_current_state(
+    context,
+    *,
+    parent_manifest_locator: str,
+    published_dataset_manifest_path: Path,
+    event_path: Path,
+    run_manifest_path: Path,
+    metrics_path: Path,
+) -> Optional[Path]:
+    logger = getattr(context, "logger", None)
+    parent_manifest_path = Path(parent_manifest_locator).expanduser()
+    if not parent_manifest_path.exists() or not parent_manifest_path.is_file():
+        if logger is not None:
+            logger.info("[provenance] Parent dataset manifest is not a local file; skipping canonical state advance")
+        return None
+
+    published_inventory_path = published_dataset_manifest_path.parent / "artifact_inventory.jsonl"
+    if not published_inventory_path.exists():
+        if logger is not None:
+            logger.info("[provenance] Published artifact inventory missing; skipping canonical state advance")
+        return None
+
+    try:
+        result = advance_current_dataset_state_from_inventory_overlay(
+            dataset_manifest_path=parent_manifest_path,
+            overlay_artifact_inventory_path=published_inventory_path,
+            title=f"Advance canonical dataset for {context.run_id}",
+            summary=f"Advanced the canonical dataset state from published run output {context.run_id}.",
+            transition_kind="canonical_dataset_update",
+            supporting_documents={
+                "published_output_artifact_inventory": published_inventory_path,
+                "canonical_dataset_update_event": event_path,
+                "run_manifest": run_manifest_path,
+                "run_metrics": metrics_path,
+            },
+            additional_control_documents=[
+                (str(event_path), "canonical_dataset_update_event"),
+                (str(published_dataset_manifest_path), "published_output_dataset_manifest"),
+                (str(run_manifest_path), "run_manifest"),
+                (str(metrics_path), "run_metrics"),
+                (str(context.pipeline_spec_manifest_path), "pipeline_spec_manifest"),
+                (str(context.source_state_manifest_path), "source_state_manifest"),
+            ],
+        )
+    except Exception as exc:
+        if logger is not None:
+            logger.warning("[provenance] Failed to advance parent canonical dataset state: %s", exc)
+        return None
+    if logger is not None:
+        logger.info("[provenance] Advanced parent canonical dataset state at %s", result["event_root"])
+    return Path(result["event_root"])
 
 
 def _load_json_document(path: Path) -> Dict[str, object]:
