@@ -53,6 +53,7 @@ class RunContext:
     source_state_manifest_path: Optional[str] = None
     published_merged_artifacts: List[Dict[str, Any]] = field(default_factory=list)
     step_state_bindings: Dict[str, str] = field(default_factory=dict)
+    published_dataset_manifest_path: Optional[str] = None
     logger: logging.Logger = field(init=False)
 
     def __post_init__(self) -> None:

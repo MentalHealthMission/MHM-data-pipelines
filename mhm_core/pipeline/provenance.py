@@ -79,7 +79,19 @@ def capture_declared_step_states(
 
     captured: List[Path] = []
     for descriptor in step.describe_produced_states(context):
-        data_root = normalize_user_path(Path(descriptor.data_root).expanduser())
+        existing_manifest_path = str(descriptor.existing_manifest_path or "").strip()
+        if existing_manifest_path:
+            manifest_path = normalize_user_path(Path(existing_manifest_path).expanduser())
+            if not manifest_path.exists() or not manifest_path.is_file():
+                continue
+            context.step_state_bindings[descriptor.lineage_key] = str(manifest_path)
+            captured.append(manifest_path)
+            continue
+
+        data_root_value = descriptor.data_root
+        if data_root_value is None:
+            continue
+        data_root = normalize_user_path(Path(data_root_value).expanduser())
         if not data_root.exists() or not data_root.is_dir():
             continue
 
@@ -254,6 +266,27 @@ def _safe_segment(value: str) -> str:
     return text.strip("-") or "state"
 
 
+def _pipeline_step_state_parent_refs(context) -> List[Dict[str, str]]:
+    refs: List[Dict[str, str]] = []
+    seen: set[str] = set()
+    for lineage_key in sorted(getattr(context, "step_state_bindings", {}).keys()):
+        if not lineage_key.startswith("merged:"):
+            continue
+        locator = str(context.step_state_bindings.get(lineage_key, "")).strip()
+        if not locator or locator in seen:
+            continue
+        ref = document_reference_from_path(
+            locator,
+            role="pipeline_step_state_manifest",
+            relation="derived_from",
+        )
+        if ref is None:
+            continue
+        seen.add(locator)
+        refs.append(ref.to_dict())
+    return refs
+
+
 def finalize_run_provenance(
     context,
     *,
@@ -276,6 +309,7 @@ def finalize_run_provenance(
             parents.append(ref.to_dict())
     if context.spec.provenance.parent_dataset_manifest:
         parents.extend(build_parent_document_refs([context.spec.provenance.parent_dataset_manifest]))
+    parents.extend(_pipeline_step_state_parent_refs(context))
     control_documents: List[Dict[str, str]] = []
     for locator, role in [
         (str(context.pipeline_spec_manifest_path) if context.pipeline_spec_manifest_path else "", "pipeline_spec_manifest"),
@@ -333,6 +367,7 @@ def finalize_run_provenance(
         run_manifest_path=run_manifest_path,
         metrics_path=metrics_path,
     )
+    context.published_dataset_manifest_path = str(bundle_dir / "dataset_manifest.json")
     return bundle_dir
 
 

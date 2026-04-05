@@ -11,7 +11,7 @@ import tarfile
 
 from botocore.exceptions import ClientError
 
-from .base import PipelineStep
+from .base import PipelineStep, PipelineStepStateDescriptor
 from ..context import RunContext, active_participants, ensure_participant_manifest, ensure_summary_manifest
 from ..manifest import (
     MetricWatermark,
@@ -180,6 +180,26 @@ class PublishStep(PipelineStep):
             "merged_files": upload_stats["merged"].files,
             "summary_files": upload_stats["summary"].files,
         }
+
+    def describe_produced_states(self, context: RunContext) -> list[PipelineStepStateDescriptor]:
+        published_manifest_path = str(getattr(context, "published_dataset_manifest_path", "") or "").strip()
+        if not published_manifest_path:
+            return []
+        return [
+            PipelineStepStateDescriptor(
+                lineage_key=f"published:{context.run_id}",
+                existing_manifest_path=published_manifest_path,
+                title=f"Published merged output for run {context.run_id}",
+                notes=f"Bound the published run-output manifest after step {self.name}.",
+                surface="published_s3",
+                domain="passive-data",
+                stage="merged",
+                extra_metadata={
+                    "run_id": context.run_id,
+                    "step_type": getattr(self, "_step_type", self.name),
+                },
+            )
+        ]
 
     # ------------------------------------------------------------------
     def _upload_tree(

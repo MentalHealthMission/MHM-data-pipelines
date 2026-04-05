@@ -16,7 +16,8 @@ class PipelineStepStateDescriptor:
     """Declarative description of a durable dataset state produced by a step."""
 
     lineage_key: str
-    data_root: str | Path
+    data_root: str | Path | None = None
+    existing_manifest_path: str | Path | None = None
     dataset_kind: str = "pipeline_step_state"
     title: str = ""
     notes: str = ""
