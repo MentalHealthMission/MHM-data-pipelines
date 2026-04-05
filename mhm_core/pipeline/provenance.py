@@ -18,11 +18,12 @@ from connect_summary.provenance.manifests import (
 from connect_summary.provenance.dataset_refresh import advance_current_dataset_state_from_inventory_overlay
 from connect_summary.provenance.hashing import add_document_hash
 from connect_summary.provenance.model import LogicalAddress, PROVENANCE_SCHEMA_VERSION, file_mtime_iso
+from connect_summary.provenance.operations import build_operation_event, write_operation_event
 from connect_summary.provenance.source import artifacts_and_coverage, snapshot_source_state
 from connect_summary.provenance.specs import snapshot_pipeline_spec
 from connect_summary.path_utils import normalize_user_path
 
-from .steps.base import PipelineStep, PipelineStepStateDescriptor
+from .steps.base import PipelineStep, PipelineStepOperationDescriptor, PipelineStepStateDescriptor
 
 
 def initialize_run_provenance(context) -> None:
@@ -154,6 +155,107 @@ def capture_declared_step_states(
     return captured
 
 
+def capture_declared_step_operations(
+    context,
+    *,
+    step: PipelineStep,
+    step_index: int,
+    metrics: Optional[Dict[str, object]] = None,
+    pre_step_state_bindings: Optional[Dict[str, str]] = None,
+) -> List[Path]:
+    if not getattr(context.spec.provenance, "enabled", True):
+        return []
+    provenance_dir = getattr(context, "provenance_dir", None)
+    if provenance_dir is None:
+        return []
+
+    state_descriptors = step.describe_produced_states(context)
+    descriptor = step.describe_operation(context) or _infer_step_operation_descriptor(
+        context=context,
+        step=step,
+        state_descriptors=state_descriptors,
+    )
+    if descriptor is None:
+        return []
+
+    pre_bindings = dict(pre_step_state_bindings or {})
+    output_refs = _operation_output_state_refs(
+        descriptor=descriptor,
+        state_descriptors=state_descriptors,
+        current_bindings=getattr(context, "step_state_bindings", {}),
+    )
+    if not output_refs:
+        return []
+
+    input_refs = _operation_input_state_refs(
+        descriptor=descriptor,
+        state_descriptors=state_descriptors,
+        pre_step_bindings=pre_bindings,
+    )
+    input_knowledge_refs = _operation_document_refs(
+        descriptor.input_knowledge_documents,
+        relation="uses",
+    )
+    output_knowledge_refs = _operation_document_refs(
+        descriptor.output_knowledge_documents,
+        relation="produces",
+    )
+    control_documents = _merge_step_control_documents(
+        _build_step_control_documents(context, _state_descriptor_control_union(state_descriptors)),
+        _operation_document_refs(descriptor.additional_control_documents, relation="supports_operation"),
+    )
+
+    site = ""
+    participant_id = str(getattr(context, "current_participant", "") or "").strip()
+    if participant_id:
+        site = str(getattr(context, "participant_sites", {}).get(participant_id, "")).strip()
+
+    operation_payload = build_operation_event(
+        operation_kind=str(descriptor.operation_kind or "transform"),
+        operation_name=str(descriptor.operation_name or step.name),
+        title=str(descriptor.title or step.name.replace("_", " ").title()),
+        summary=str(descriptor.summary or ""),
+        input_state_refs=input_refs,
+        input_knowledge_refs=input_knowledge_refs,
+        output_state_refs=output_refs,
+        output_knowledge_refs=output_knowledge_refs,
+        control_documents=control_documents,
+        parameters=dict(descriptor.parameters or {}),
+        execution_context={
+            "run_id": context.run_id,
+            "step_name": step.name,
+            "step_index": step_index,
+            "participant_id": participant_id,
+            "site": site,
+        },
+        metrics=metrics or {},
+        extra_metadata={
+            "run_id": context.run_id,
+            "step_name": step.name,
+            "step_index": step_index,
+            "participant_id": participant_id,
+            "site": site,
+            **dict(descriptor.extra_metadata or {}),
+        },
+    )
+
+    written: List[Path] = []
+    seen_roots: set[Path] = set()
+    for ref in output_refs:
+        locator = str(ref.get("locator", "")).strip()
+        if not locator:
+            continue
+        manifest_path = normalize_user_path(Path(locator).expanduser())
+        manifest_root = manifest_path.parent
+        if manifest_root in seen_roots:
+            continue
+        seen_roots.add(manifest_root)
+        operation_path = manifest_root / "operation_event.json"
+        write_operation_event(operation_path, operation_payload)
+        written.append(operation_path)
+    return written
+
+
 def record_published_merged_artifact(
     context,
     *,
@@ -213,6 +315,128 @@ def _resolve_step_state_parent_manifest(context, descriptor: PipelineStepStateDe
         if parent_binding:
             return parent_binding
     return str(descriptor.default_parent_manifest or "").strip()
+
+
+def _infer_step_operation_descriptor(
+    *,
+    context,
+    step: PipelineStep,
+    state_descriptors: List[PipelineStepStateDescriptor],
+) -> PipelineStepOperationDescriptor | None:
+    if not state_descriptors:
+        return None
+    return PipelineStepOperationDescriptor(
+        operation_kind="transform",
+        operation_name=step.name,
+        title=step.name.replace("_", " ").title(),
+        summary="Recorded generic pipeline operation that produced the linked state.",
+        output_lineage_keys=[descriptor.lineage_key for descriptor in state_descriptors],
+    )
+
+
+def _state_descriptor_control_union(
+    descriptors: List[PipelineStepStateDescriptor],
+) -> PipelineStepStateDescriptor:
+    merged = PipelineStepStateDescriptor(lineage_key="")
+    seen: set[tuple[str, str]] = set()
+    for descriptor in descriptors:
+        for locator, role in list(descriptor.additional_control_documents or []):
+            key = (str(locator), str(role))
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.additional_control_documents.append((str(locator), str(role)))
+    return merged
+
+
+def _operation_input_state_refs(
+    *,
+    descriptor: PipelineStepOperationDescriptor,
+    state_descriptors: List[PipelineStepStateDescriptor],
+    pre_step_bindings: Dict[str, str],
+) -> List[Dict[str, str]]:
+    refs: List[Dict[str, str]] = []
+    seen: set[str] = set()
+
+    for lineage_key in descriptor.input_lineage_keys:
+        locator = str(pre_step_bindings.get(lineage_key, "")).strip()
+        _append_operation_state_ref(refs, seen, locator, role="input_state_manifest", relation="uses")
+
+    for locator in descriptor.input_state_manifests:
+        _append_operation_state_ref(
+            refs,
+            seen,
+            str(locator),
+            role="input_state_manifest",
+            relation="uses",
+        )
+
+    if refs:
+        return refs
+
+    for state_descriptor in state_descriptors:
+        locator = str(pre_step_bindings.get(state_descriptor.lineage_key, "")).strip()
+        if not locator and state_descriptor.parent_lineage_key:
+            locator = str(pre_step_bindings.get(state_descriptor.parent_lineage_key, "")).strip()
+        if not locator:
+            locator = str(state_descriptor.default_parent_manifest or "").strip()
+        _append_operation_state_ref(refs, seen, locator, role="input_state_manifest", relation="uses")
+    return refs
+
+
+def _operation_output_state_refs(
+    *,
+    descriptor: PipelineStepOperationDescriptor,
+    state_descriptors: List[PipelineStepStateDescriptor],
+    current_bindings: Dict[str, str],
+) -> List[Dict[str, str]]:
+    refs: List[Dict[str, str]] = []
+    seen: set[str] = set()
+
+    lineage_keys = list(descriptor.output_lineage_keys or [])
+    if not lineage_keys:
+        lineage_keys = [state_descriptor.lineage_key for state_descriptor in state_descriptors]
+
+    for lineage_key in lineage_keys:
+        locator = str(current_bindings.get(lineage_key, "")).strip()
+        _append_operation_state_ref(refs, seen, locator, role="output_state_manifest", relation="produces")
+    return refs
+
+
+def _operation_document_refs(
+    entries: List[tuple[str, str]],
+    *,
+    relation: str,
+) -> List[Dict[str, str]]:
+    refs: List[Dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for locator, role in entries:
+        key = (str(locator), str(role))
+        if key in seen:
+            continue
+        seen.add(key)
+        ref = document_reference_from_path(str(locator), role=str(role), relation=relation)
+        if ref is not None:
+            refs.append(ref.to_dict())
+    return refs
+
+
+def _append_operation_state_ref(
+    refs: List[Dict[str, str]],
+    seen: set[str],
+    locator: str,
+    *,
+    role: str,
+    relation: str,
+) -> None:
+    path = str(locator or "").strip()
+    if not path or path in seen:
+        return
+    ref = document_reference_from_path(path, role=role, relation=relation)
+    if ref is None:
+        return
+    seen.add(path)
+    refs.append(ref.to_dict())
 
 
 def _source_state_scope_prefixes(context) -> list[str]:

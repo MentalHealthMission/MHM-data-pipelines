@@ -11,7 +11,7 @@ import tarfile
 
 from botocore.exceptions import ClientError
 
-from .base import PipelineStep, PipelineStepStateDescriptor
+from .base import PipelineStep, PipelineStepOperationDescriptor, PipelineStepStateDescriptor
 from ..context import RunContext, active_participants, ensure_participant_manifest, ensure_summary_manifest
 from ..manifest import (
     MetricWatermark,
@@ -200,6 +200,28 @@ class PublishStep(PipelineStep):
                 },
             )
         ]
+
+    def describe_operation(self, context: RunContext) -> PipelineStepOperationDescriptor | None:
+        published_manifest_path = str(getattr(context, "published_dataset_manifest_path", "") or "").strip()
+        if not published_manifest_path:
+            return None
+        merged_lineages = [
+            lineage_key
+            for lineage_key in sorted(getattr(context, "step_state_bindings", {}).keys())
+            if lineage_key.startswith("merged:")
+        ]
+        return PipelineStepOperationDescriptor(
+            operation_kind="publish",
+            operation_name=self.name,
+            title="Publish merged output",
+            summary="Published the merged run outputs and attached their run-local provenance.",
+            input_lineage_keys=merged_lineages,
+            output_lineage_keys=[f"published:{context.run_id}"],
+            extra_metadata={
+                "run_id": context.run_id,
+                "merged_input_count": len(merged_lineages),
+            },
+        )
 
     # ------------------------------------------------------------------
     def _upload_tree(

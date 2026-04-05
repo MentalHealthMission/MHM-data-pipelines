@@ -35,6 +35,24 @@ class PipelineStepStateDescriptor:
     additional_control_documents: list[tuple[str, str]] = field(default_factory=list)
 
 
+@dataclass
+class PipelineStepOperationDescriptor:
+    """Declarative description of an operation performed by a step."""
+
+    operation_kind: str = "transform"
+    operation_name: str = ""
+    title: str = ""
+    summary: str = ""
+    input_lineage_keys: list[str] = field(default_factory=list)
+    output_lineage_keys: list[str] = field(default_factory=list)
+    input_state_manifests: list[str | Path] = field(default_factory=list)
+    input_knowledge_documents: list[tuple[str, str]] = field(default_factory=list)
+    output_knowledge_documents: list[tuple[str, str]] = field(default_factory=list)
+    additional_control_documents: list[tuple[str, str]] = field(default_factory=list)
+    parameters: Dict[str, Any] = field(default_factory=dict)
+    extra_metadata: Dict[str, Any] = field(default_factory=dict)
+
+
 class PipelineStep(ABC):
     """Simple interface for a pipeline step."""
 
@@ -63,6 +81,10 @@ class PipelineStep(ABC):
     def describe_produced_states(self, context: RunContext) -> list[PipelineStepStateDescriptor]:
         """Declare durable dataset states produced by this step for provenance capture."""
         return []
+
+    def describe_operation(self, context: RunContext) -> PipelineStepOperationDescriptor | None:
+        """Declare the semantic operation performed by this step for provenance capture."""
+        return None
 
     def log(self, context: RunContext, message: str) -> None:
         context.logger.info("[%-9s] %s", self.name, message)
@@ -97,4 +119,9 @@ class NoOpStep(PipelineStep):
         return {"status": "skipped"}
 
 
-__all__ = ["PipelineStep", "PipelineStepStateDescriptor", "NoOpStep"]
+__all__ = [
+    "PipelineStep",
+    "PipelineStepOperationDescriptor",
+    "PipelineStepStateDescriptor",
+    "NoOpStep",
+]

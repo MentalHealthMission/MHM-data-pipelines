@@ -18,7 +18,7 @@ from botocore.exceptions import ClientError
 from .context import create_run_context, resolve_output_prefix
 from .discovery import discover_participants
 from .queue import PRIORITY_RANK, select_next_spec
-from .provenance import capture_declared_step_states, initialize_run_provenance
+from .provenance import capture_declared_step_operations, capture_declared_step_states, initialize_run_provenance
 from .refresh_plan import build_refresh_plan
 from .spec import RunSpec, load_spec, validate_spec
 from .steps import build_steps
@@ -134,6 +134,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             context.current_participant = participant_id
             context.logger.info("Processing participant %s", participant_id)
             for step in per_participant_steps:
+                pre_step_state_bindings = dict(context.step_state_bindings)
                 metrics = step.run(context)
                 context.metrics[step.name][participant_id] = metrics
                 capture_declared_step_states(
@@ -141,6 +142,13 @@ def cmd_run(args: argparse.Namespace) -> int:
                     step=step,
                     step_index=int(getattr(step, "_step_index", 0) or 0),
                     metrics=metrics,
+                )
+                capture_declared_step_operations(
+                    context,
+                    step=step,
+                    step_index=int(getattr(step, "_step_index", 0) or 0),
+                    metrics=metrics,
+                    pre_step_state_bindings=pre_step_state_bindings,
                 )
             if _should_suspend(context, queue_prefix, last_suspend_probe):
                 return SUSPEND_EXIT_CODE
@@ -155,12 +163,20 @@ def cmd_run(args: argparse.Namespace) -> int:
                 total_batches,
                 len(batch),
             )
+            pre_step_state_bindings = dict(context.step_state_bindings)
             metrics = step.run(context)
             capture_declared_step_states(
                 context,
                 step=step,
                 step_index=int(getattr(step, "_step_index", 0) or 0),
                 metrics=metrics,
+            )
+            capture_declared_step_operations(
+                context,
+                step=step,
+                step_index=int(getattr(step, "_step_index", 0) or 0),
+                metrics=metrics,
+                pre_step_state_bindings=pre_step_state_bindings,
             )
             key = "all" if total_batches == 1 else batch_label
             if total_batches == 1:
