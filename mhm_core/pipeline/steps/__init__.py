@@ -21,13 +21,15 @@ def build_step_registry(spec: RunSpec) -> Dict[str, Type[PipelineStep]]:
 def build_steps(spec: RunSpec) -> List[PipelineStep]:
     registry = build_step_registry(spec)
     steps: List[PipelineStep] = []
-    for step_spec in spec.processing.steps:
+    for index, step_spec in enumerate(spec.processing.steps, start=1):
         cls = registry.get(step_spec.type)
         if cls is None:
             raise ValueError(f"Unknown step type for profile '{spec.profile}': {step_spec.type}")
-        steps.append(cls(step_spec.options))
+        step = cls(step_spec.options)
+        setattr(step, "_step_index", index)
+        setattr(step, "_step_type", step_spec.type)
+        steps.append(step)
     return steps
 
 
 __all__ = ["CORE_STEP_REGISTRY", "build_step_registry", "build_steps", "PipelineStep"]
-

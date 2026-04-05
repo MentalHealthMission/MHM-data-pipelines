@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 from typing import Dict, List, Optional
 
 from connect_summary.provenance.manifests import (
     append_history_event,
+    build_dataset_snapshot,
     build_dataset_snapshot_from_inventory,
     build_parent_document_refs,
     document_reference_from_path,
@@ -18,6 +20,9 @@ from connect_summary.provenance.hashing import add_document_hash
 from connect_summary.provenance.model import LogicalAddress, PROVENANCE_SCHEMA_VERSION, file_mtime_iso
 from connect_summary.provenance.source import artifacts_and_coverage, snapshot_source_state
 from connect_summary.provenance.specs import snapshot_pipeline_spec
+from connect_summary.path_utils import normalize_user_path
+
+from .steps.base import PipelineStep, PipelineStepStateDescriptor
 
 
 def initialize_run_provenance(context) -> None:
@@ -57,6 +62,82 @@ def initialize_run_provenance(context) -> None:
             parent_dataset_manifest=context.spec.provenance.parent_dataset_manifest,
         )
         context.pipeline_spec_manifest_path = spec_manifest_path
+
+
+def capture_declared_step_states(
+    context,
+    *,
+    step: PipelineStep,
+    step_index: int,
+    metrics: Optional[Dict[str, object]] = None,
+) -> List[Path]:
+    if not getattr(context.spec.provenance, "enabled", True):
+        return []
+    provenance_dir = getattr(context, "provenance_dir", None)
+    if provenance_dir is None:
+        return []
+
+    captured: List[Path] = []
+    for descriptor in step.describe_produced_states(context):
+        data_root = normalize_user_path(Path(descriptor.data_root).expanduser())
+        if not data_root.exists() or not data_root.is_dir():
+            continue
+
+        parent_manifest = _resolve_step_state_parent_manifest(context, descriptor)
+        snapshot = build_dataset_snapshot(
+            data_root=data_root,
+            dataset_kind=descriptor.dataset_kind,
+            title=descriptor.title or f"{step.name} state",
+            source_dataset_manifest=parent_manifest,
+            source_state_manifest=str(context.source_state_manifest_path or ""),
+            notes=descriptor.notes,
+            surface=descriptor.surface,
+            domain=descriptor.domain,
+            stage=descriptor.stage,
+            layout=descriptor.layout,
+            slice_name=descriptor.slice_name,
+            fingerprint_mode=descriptor.fingerprint_mode,
+            logical_root_overrides=dict(descriptor.logical_root_overrides or {}),
+            extra_metadata={
+                "run_id": context.run_id,
+                "step_name": step.name,
+                "step_index": step_index,
+                "lineage_key": descriptor.lineage_key,
+                **dict(descriptor.extra_metadata or {}),
+            },
+        )
+        snapshot["control_documents"] = _merge_step_control_documents(
+            snapshot.get("control_documents", []),
+            _build_step_control_documents(context, descriptor),
+        )
+
+        manifest_root = _step_state_manifest_root(
+            provenance_dir=provenance_dir,
+            lineage_key=descriptor.lineage_key,
+            step_index=step_index,
+            step_name=step.name,
+        )
+        paths = write_dataset_manifest_bundle(
+            manifest_root=manifest_root,
+            snapshot=snapshot,
+            history_event={
+                "event_type": descriptor.history_event_type,
+                "generated_at": snapshot["generated_at"],
+                "dataset_id": snapshot["dataset_id"],
+                "dataset_kind": snapshot["dataset_kind"],
+                "data_root": snapshot["data_root"],
+                "logical_root": snapshot["logical_root"],
+                "run_id": context.run_id,
+                "step_name": step.name,
+                "step_index": step_index,
+                "lineage_key": descriptor.lineage_key,
+                "participant_id": getattr(context, "current_participant", "") or "",
+                "metrics": metrics or {},
+            },
+        )
+        context.step_state_bindings[descriptor.lineage_key] = str(paths["dataset_manifest"])
+        captured.append(paths["dataset_manifest"])
+    return captured
 
 
 def record_published_merged_artifact(
@@ -106,6 +187,71 @@ def record_published_merged_artifact(
 
     record["artifact_hash"] = build_artifact_hash(record)
     context.published_merged_artifacts.append(record)
+
+
+def _resolve_step_state_parent_manifest(context, descriptor: PipelineStepStateDescriptor) -> str:
+    current_binding = str(context.step_state_bindings.get(descriptor.lineage_key, "")).strip()
+    if current_binding:
+        return current_binding
+    parent_lineage = str(descriptor.parent_lineage_key or "").strip()
+    if parent_lineage:
+        parent_binding = str(context.step_state_bindings.get(parent_lineage, "")).strip()
+        if parent_binding:
+            return parent_binding
+    return str(descriptor.default_parent_manifest or "").strip()
+
+
+def _build_step_control_documents(
+    context,
+    descriptor: PipelineStepStateDescriptor,
+) -> List[Dict[str, str]]:
+    refs: List[Dict[str, str]] = []
+    for locator, role in [
+        (str(context.pipeline_spec_manifest_path) if context.pipeline_spec_manifest_path else "", "pipeline_spec_manifest"),
+        (str(context.source_state_manifest_path or ""), "source_state_manifest"),
+        *list(descriptor.additional_control_documents or []),
+    ]:
+        ref = document_reference_from_path(locator, role=role)
+        if ref is not None:
+            refs.append(ref.to_dict())
+    return refs
+
+
+def _merge_step_control_documents(
+    existing: object,
+    additional: List[Dict[str, str]],
+) -> List[Dict[str, str]]:
+    merged: List[Dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for entry in list(existing or []) + additional:
+        if not isinstance(entry, dict):
+            continue
+        locator = str(entry.get("locator", "")).strip()
+        role = str(entry.get("role", "")).strip()
+        key = (locator, role)
+        if not locator or key in seen:
+            continue
+        seen.add(key)
+        merged.append(entry)
+    return merged
+
+
+def _step_state_manifest_root(
+    *,
+    provenance_dir: Path,
+    lineage_key: str,
+    step_index: int,
+    step_name: str,
+) -> Path:
+    safe_lineage = _safe_segment(lineage_key)
+    safe_step = _safe_segment(step_name)
+    return provenance_dir / "step_states" / safe_lineage / f"{step_index:02d}-{safe_step}"
+
+
+def _safe_segment(value: str) -> str:
+    text = str(value or "").strip().lower()
+    text = re.sub(r"[^a-z0-9._-]+", "-", text)
+    return text.strip("-") or "state"
 
 
 def finalize_run_provenance(

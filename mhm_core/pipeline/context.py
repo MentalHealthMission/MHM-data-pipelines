@@ -52,6 +52,7 @@ class RunContext:
     pipeline_spec_manifest_path: Optional[Path] = None
     source_state_manifest_path: Optional[str] = None
     published_merged_artifacts: List[Dict[str, Any]] = field(default_factory=list)
+    step_state_bindings: Dict[str, str] = field(default_factory=dict)
     logger: logging.Logger = field(init=False)
 
     def __post_init__(self) -> None:

@@ -3,10 +3,35 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, Optional
 import subprocess
 
 from ..context import RunContext
+
+
+@dataclass
+class PipelineStepStateDescriptor:
+    """Declarative description of a durable dataset state produced by a step."""
+
+    lineage_key: str
+    data_root: str | Path
+    dataset_kind: str = "pipeline_step_state"
+    title: str = ""
+    notes: str = ""
+    surface: str = ""
+    domain: str = ""
+    stage: str = ""
+    layout: str = ""
+    slice_name: str = ""
+    fingerprint_mode: str = "metadata"
+    parent_lineage_key: str = ""
+    default_parent_manifest: str = ""
+    history_event_type: str = "snapshot_pipeline_step_state"
+    logical_root_overrides: Dict[str, Any] = field(default_factory=dict)
+    extra_metadata: Dict[str, Any] = field(default_factory=dict)
+    additional_control_documents: list[tuple[str, str]] = field(default_factory=list)
 
 
 class PipelineStep(ABC):
@@ -33,6 +58,10 @@ class PipelineStep(ABC):
     @abstractmethod
     def run(self, context: RunContext) -> Dict[str, Any]:
         """Execute the step and return step-specific metrics."""
+
+    def describe_produced_states(self, context: RunContext) -> list[PipelineStepStateDescriptor]:
+        """Declare durable dataset states produced by this step for provenance capture."""
+        return []
 
     def log(self, context: RunContext, message: str) -> None:
         context.logger.info("[%-9s] %s", self.name, message)
@@ -67,4 +96,4 @@ class NoOpStep(PipelineStep):
         return {"status": "skipped"}
 
 
-__all__ = ["PipelineStep", "NoOpStep"]
+__all__ = ["PipelineStep", "PipelineStepStateDescriptor", "NoOpStep"]
