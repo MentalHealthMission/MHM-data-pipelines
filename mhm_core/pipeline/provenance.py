@@ -37,6 +37,7 @@ def initialize_run_provenance(context) -> None:
     if getattr(context.spec.provenance, "snapshot_source_state", False):
         source_state_dir = provenance_dir / "source_state"
         source_uri = f"s3://{context.spec.source.bucket}/{context.spec.source.prefix.strip('/')}"
+        source_scope_prefixes = _source_state_scope_prefixes(context)
         result = snapshot_source_state(
             source=source_uri,
             manifest_root=source_state_dir,
@@ -47,6 +48,7 @@ def initialize_run_provenance(context) -> None:
             stage="captured",
             layout="raw_source_v1",
             notes=f"Captured for pipeline run {context.run_id}",
+            include_relative_prefixes=source_scope_prefixes,
         )
         context.source_state_manifest_path = str(result["paths"]["dataset_manifest"])
         source_state_manifest = context.source_state_manifest_path
@@ -211,6 +213,23 @@ def _resolve_step_state_parent_manifest(context, descriptor: PipelineStepStateDe
         if parent_binding:
             return parent_binding
     return str(descriptor.default_parent_manifest or "").strip()
+
+
+def _source_state_scope_prefixes(context) -> list[str]:
+    participants = list(getattr(context.spec.source, "participants", []) or [])
+    participant_sites = dict(getattr(context, "participant_sites", {}) or {})
+    scoped_participants: list[str] = []
+    for participant_id in participants:
+        site = str(participant_sites.get(participant_id, "")).strip()
+        if not site:
+            continue
+        scoped_participants.append(f"{site}/{participant_id}")
+    if scoped_participants:
+        return sorted(dict.fromkeys(scoped_participants))
+    sites = [str(site).strip() for site in getattr(context.spec.source, "sites", []) if str(site).strip()]
+    if sites:
+        return sorted(dict.fromkeys(sites))
+    return []
 
 
 def _build_step_control_documents(
