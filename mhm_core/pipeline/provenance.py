@@ -781,6 +781,9 @@ def _advance_parent_dataset_current_state(
                 (str(context.pipeline_spec_manifest_path), "pipeline_spec_manifest"),
                 (str(context.source_state_manifest_path), "source_state_manifest"),
             ],
+            additional_input_state_locators=[
+                str(published_dataset_manifest_path),
+            ],
         )
     except Exception as exc:
         if logger is not None:
