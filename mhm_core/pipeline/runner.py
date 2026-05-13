@@ -108,6 +108,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     else:
         context.summary_manifest_prefix = None
     participants = list(spec.iter_participants())
+    participants = _filter_participants_for_latest_measurement_metrics(context, participants)
     participants = _filter_completed_participants(context, participants)
     spec.source.participants = list(participants)
     context.metrics = {step.name: {} for step in steps}
@@ -259,6 +260,11 @@ def _filter_completed_participants(context, participants: list[str]) -> list[str
         return participants
     if not participants:
         return participants
+    if _is_latest_measurement_only_spec(context.spec):
+        context.logger.info(
+            "[resume   ] Skipping merged-data resume filter for latest-measurement run"
+        )
+        return participants
     if not context.merged_base_prefix.startswith("s3://"):
         context.logger.info("[resume   ] merged base prefix is not S3-backed; skipping resume filter")
         return participants
@@ -317,6 +323,89 @@ def _filter_completed_participants(context, participants: list[str]) -> list[str
     remaining = [participant_id for participant_id in participants if participant_id not in completed]
     context.logger.info("[resume   ] %d participants remain to process", len(remaining))
     return remaining
+
+
+def _is_latest_measurement_only_spec(spec: RunSpec) -> bool:
+    step_types = {str(step.type).strip() for step in getattr(spec.processing, "steps", [])}
+    if "latest_measurement_dates" not in step_types:
+        return False
+    data_transform_steps = {"merge", "redact", "summary", "rapids"}
+    return not bool(step_types & data_transform_steps)
+
+
+def _latest_measurement_metrics(spec: RunSpec) -> list[str]:
+    metrics: set[str] = set()
+    for step in getattr(spec.processing, "steps", []):
+        if str(step.type).strip() != "latest_measurement_dates":
+            continue
+        for measure in step.options.get("measures", []):
+            if not isinstance(measure, dict):
+                continue
+            metric = str(measure.get("metric", "")).strip()
+            if metric:
+                metrics.add(metric)
+    if not metrics:
+        metrics.update(getattr(spec.filters, "include_metrics", []))
+    return sorted(metrics)
+
+
+def _filter_participants_for_latest_measurement_metrics(context, participants: list[str]) -> list[str]:
+    if not participants:
+        return participants
+    if not _is_latest_measurement_only_spec(context.spec):
+        return participants
+
+    metrics = _latest_measurement_metrics(context.spec)
+    if not metrics:
+        return participants
+
+    source_prefix = str(context.spec.source.prefix).strip().strip("/")
+    kept: list[str] = []
+    unknown_site_count = 0
+    checked_prefixes = 0
+
+    for participant_id in participants:
+        site = context.participant_sites.get(participant_id)
+        if not site:
+            unknown_site_count += 1
+            kept.append(participant_id)
+            continue
+        for metric in metrics:
+            metric_prefix = "/".join(
+                part.strip("/")
+                for part in [source_prefix, site, participant_id, metric]
+                if str(part).strip("/")
+            )
+            checked_prefixes += 1
+            if _s3_prefix_has_objects(context.s3_client, context.spec.source.bucket, f"{metric_prefix}/"):
+                kept.append(participant_id)
+                break
+
+    removed = len(participants) - len(kept)
+    context.logger.info(
+        "[latest  ] Kept %d participants with source data for %d latest-measurement metric(s); filtered %d without those metrics",
+        len(kept),
+        len(metrics),
+        removed,
+    )
+    context.logger.debug("[latest  ] Checked %d source metric prefixes", checked_prefixes)
+    if unknown_site_count:
+        context.logger.info(
+            "[latest  ] %d participants have unknown site mapping and were kept for normal validation",
+            unknown_site_count,
+        )
+    return kept
+
+
+def _s3_prefix_has_objects(s3_client, bucket: str, prefix: str) -> bool:
+    try:
+        response = s3_client.list_objects_v2(Bucket=bucket, Prefix=prefix, MaxKeys=1)
+    except AttributeError:
+        paginator = s3_client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+            return bool(page.get("Contents"))
+        return False
+    return bool(response.get("KeyCount") or response.get("Contents"))
 
 
 def _split_s3_uri(uri: str) -> tuple[str, str]:

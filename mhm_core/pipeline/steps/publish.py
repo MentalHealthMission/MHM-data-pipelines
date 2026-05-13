@@ -13,6 +13,11 @@ from botocore.exceptions import ClientError
 
 from .base import PipelineStep, PipelineStepOperationDescriptor, PipelineStepStateDescriptor
 from ..context import RunContext, active_participants, ensure_participant_manifest, ensure_summary_manifest
+from ..context import ensure_latest_measurement_manifest
+from ..latest_measurement_manifest import (
+    save_latest_measurement_manifest,
+    write_local_latest_measurement_manifest,
+)
 from ..manifest import (
     MetricWatermark,
     ParticipantManifest,
@@ -37,7 +42,12 @@ class PublishStep(PipelineStep):
         outputs = context.spec.outputs
         run_id = context.run_id
 
-        upload_stats = {"merged": UploadResult(), "summary": UploadResult(), "logs": UploadResult()}
+        upload_stats = {
+            "merged": UploadResult(),
+            "summary": UploadResult(),
+            "latest_measurement": UploadResult(),
+            "logs": UploadResult(),
+        }
 
         self.log(context, "Uploading outputs to S3")
 
@@ -52,6 +62,7 @@ class PublishStep(PipelineStep):
             manifest = ensure_participant_manifest(context, participant_id)
 
             summary_state = context.summary_outputs.get(participant_id)
+            latest_measurement_state = context.latest_measurement_outputs.get(participant_id)
 
             merged_local = context.merged_dir / site / participant_id
             merged_prefix = outputs.merged_prefix.format(run_id=run_id, site=site, participant_id=participant_id).rstrip("/")
@@ -83,6 +94,24 @@ class PublishStep(PipelineStep):
                 filter_prefix=f"{participant_id}_",
                 collect_keys=True,
             )
+
+            latest_measurement_prefix_template = getattr(context, "latest_measurement_output_prefix", None)
+            latest_measurement_keys: List[str] = []
+            if latest_measurement_state and latest_measurement_prefix_template:
+                latest_measurement_local = context.latest_measurement_dir
+                latest_measurement_prefix = latest_measurement_prefix_template.format(
+                    run_id=run_id,
+                    site=site,
+                    participant_id=participant_id,
+                ).rstrip("/")
+                upload_stats["latest_measurement"], latest_measurement_keys, _ = self._upload_tree(
+                    context,
+                    latest_measurement_local,
+                    latest_measurement_prefix,
+                    upload_stats["latest_measurement"],
+                    filter_prefix=f"{participant_id}_",
+                    collect_keys=True,
+                )
 
             self._refresh_manifest_metrics(manifest, merged_local)
             self._cleanup_participant_local(context, site, participant_id)
@@ -122,6 +151,32 @@ class PublishStep(PipelineStep):
                     site,
                     participant_id,
                     context.summary_manifest_prefix,
+                )
+
+            if latest_measurement_state and context.latest_measurement_manifest_prefix:
+                latest_measurement_manifest = ensure_latest_measurement_manifest(context, participant_id)
+                if latest_measurement_keys:
+                    latest_measurement_manifest.measurement_files = latest_measurement_keys
+                latest_measurement_manifest.source_watermarks = latest_measurement_state.source_watermarks
+                latest_measurement_manifest.results = latest_measurement_state.results
+                local_latest_measurement_manifest_dir = context.logs_dir / "latest_measurement_manifests"
+                local_latest_measurement_manifest_path = local_latest_measurement_manifest_dir / f"{participant_id}.json"
+                write_local_latest_measurement_manifest(
+                    latest_measurement_manifest,
+                    local_latest_measurement_manifest_path,
+                    run_id,
+                )
+                save_latest_measurement_manifest(
+                    context.s3_client,
+                    latest_measurement_manifest,
+                    run_id=run_id,
+                    manifest_prefix=context.latest_measurement_manifest_prefix,
+                )
+                context.logger.info(
+                    "[publish  ] Updated latest-measurement manifest for %s/%s at %s",
+                    site,
+                    participant_id,
+                    context.latest_measurement_manifest_prefix,
                 )
 
         context.logs_dir.mkdir(parents=True, exist_ok=True)
@@ -179,6 +234,7 @@ class PublishStep(PipelineStep):
             "status": "ok",
             "merged_files": upload_stats["merged"].files,
             "summary_files": upload_stats["summary"].files,
+            "latest_measurement_files": upload_stats["latest_measurement"].files,
         }
 
     def describe_produced_states(self, context: RunContext) -> list[PipelineStepStateDescriptor]:
@@ -312,6 +368,13 @@ class PublishStep(PipelineStep):
 
         if cfg.remove_local_summary_after_publish:
             for file_path in context.summary_dir.glob(f"{participant_id}_*.json"):
+                try:
+                    file_path.unlink()
+                except OSError as exc:  # pragma: no cover
+                    context.logger.debug("[publish  ] Failed removing %s: %s", file_path, exc)
+
+        if getattr(cfg, "remove_local_latest_measurement_after_publish", True):
+            for file_path in context.latest_measurement_dir.glob(f"{participant_id}_*.json"):
                 try:
                     file_path.unlink()
                 except OSError as exc:  # pragma: no cover

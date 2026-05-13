@@ -191,6 +191,7 @@ class PublishingConfig:
     remove_local_raw_after_publish: bool = True
     remove_local_merged_after_publish: bool = True
     remove_local_summary_after_publish: bool = True
+    remove_local_latest_measurement_after_publish: bool = True
     notifications: List[NotificationConfig] = field(default_factory=list)
 
     @classmethod
@@ -202,6 +203,9 @@ class PublishingConfig:
             remove_local_raw_after_publish=bool(data.get("remove_local_raw_after_publish", True)),
             remove_local_merged_after_publish=bool(data.get("remove_local_merged_after_publish", True)),
             remove_local_summary_after_publish=bool(data.get("remove_local_summary_after_publish", True)),
+            remove_local_latest_measurement_after_publish=bool(
+                data.get("remove_local_latest_measurement_after_publish", True)
+            ),
             notifications=notifications,
         )
 

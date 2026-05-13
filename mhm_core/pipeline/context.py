@@ -15,6 +15,7 @@ from .spec import RunSpec
 from .discovery import discover_participants
 from .manifest import ParticipantManifest, load_participant_manifest
 from .refresh_plan import RefreshPlan, SummaryCachePolicy
+from .latest_measurement_manifest import LatestMeasurementManifest, load_latest_measurement_manifest
 from .summary_manifest import SummaryManifest, load_summary_manifest
 
 
@@ -26,6 +27,14 @@ class SummaryState:
 
 
 @dataclass
+class LatestMeasurementState:
+    reused: bool
+    local_files: List[Path]
+    source_watermarks: Dict[str, str]
+    results: Dict[str, object]
+
+
+@dataclass
 class RunContext:
     spec: RunSpec
     run_id: str
@@ -33,6 +42,7 @@ class RunContext:
     raw_dir: Path
     merged_dir: Path
     summary_dir: Path
+    latest_measurement_dir: Path
     logs_dir: Path
     s3_client: boto3.client
     start_time: datetime = field(default_factory=datetime.utcnow)
@@ -47,6 +57,10 @@ class RunContext:
     summary_manifest_prefix: Optional[str] = None
     summary_manifests: Dict[str, SummaryManifest] = field(default_factory=dict)
     summary_outputs: Dict[str, SummaryState] = field(default_factory=dict)
+    latest_measurement_manifest_prefix: Optional[str] = None
+    latest_measurement_output_prefix: Optional[str] = None
+    latest_measurement_manifests: Dict[str, LatestMeasurementManifest] = field(default_factory=dict)
+    latest_measurement_outputs: Dict[str, LatestMeasurementState] = field(default_factory=dict)
     spec_locator: str = ""
     provenance_dir: Optional[Path] = None
     pipeline_spec_manifest_path: Optional[Path] = None
@@ -61,7 +75,14 @@ class RunContext:
         self.logger.setLevel(logging.INFO)
 
     def ensure_directories(self) -> None:
-        for path in (self.workspace_dir, self.raw_dir, self.merged_dir, self.summary_dir, self.logs_dir):
+        for path in (
+            self.workspace_dir,
+            self.raw_dir,
+            self.merged_dir,
+            self.summary_dir,
+            self.latest_measurement_dir,
+            self.logs_dir,
+        ):
             path.mkdir(parents=True, exist_ok=True)
         if self.provenance_dir is not None:
             self.provenance_dir.mkdir(parents=True, exist_ok=True)
@@ -80,6 +101,7 @@ def create_run_context(
     raw_dir = run_dir / "raw"
     merged_dir = run_dir / "merged"
     summary_dir = run_dir / "summary"
+    latest_measurement_dir = run_dir / "latest_measurement_dates"
     logs_dir = run_dir / "logs"
 
     merged_base_prefix = resolve_output_base_prefix(spec.outputs.merged_prefix, run_id=spec.run_id)
@@ -91,6 +113,7 @@ def create_run_context(
         raw_dir=raw_dir,
         merged_dir=merged_dir,
         summary_dir=summary_dir,
+        latest_measurement_dir=latest_measurement_dir,
         logs_dir=logs_dir,
         s3_client=s3_client,
         merged_base_prefix=merged_base_prefix,
@@ -177,6 +200,28 @@ def ensure_summary_manifest(context: RunContext, participant_id: str) -> Summary
     return context.summary_manifests[participant_id]
 
 
+def ensure_latest_measurement_manifest(context: RunContext, participant_id: str) -> LatestMeasurementManifest:
+    if participant_id not in context.latest_measurement_manifests:
+        site = context.participant_sites.get(participant_id)
+        if not site:
+            raise KeyError(f"Site unknown for participant {participant_id}; cannot load latest-measurement manifest")
+        prefix = context.latest_measurement_manifest_prefix
+        if not prefix:
+            context.latest_measurement_manifests[participant_id] = LatestMeasurementManifest(
+                participant_id=participant_id,
+                site=site,
+            )
+        else:
+            manifest = load_latest_measurement_manifest(
+                context.s3_client,
+                site=site,
+                participant_id=participant_id,
+                manifest_prefix=prefix,
+            )
+            context.latest_measurement_manifests[participant_id] = manifest
+    return context.latest_measurement_manifests[participant_id]
+
+
 def active_participants(context: RunContext) -> List[str]:
     if context.current_participant:
         return [context.current_participant]
@@ -190,10 +235,12 @@ def active_participants(context: RunContext) -> List[str]:
 __all__ = [
     "RunContext",
     "SummaryState",
+    "LatestMeasurementState",
     "create_run_context",
     "active_participants",
     "ensure_participant_manifest",
     "ensure_summary_manifest",
+    "ensure_latest_measurement_manifest",
     "resolve_output_base_prefix",
     "resolve_output_prefix",
 ]
