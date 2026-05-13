@@ -84,6 +84,12 @@ class PublishStep(PipelineStep):
                     s3_uri=s3_uri,
                 )
 
+            publish_participant_manifest = not (
+                self._is_latest_measurement_only_run(context)
+                and not merged_uploads
+                and not merged_local.exists()
+            )
+
             summary_local = context.summary_dir
             summary_prefix = outputs.summary_prefix.format(run_id=run_id, site=site, participant_id=participant_id).rstrip("/")
             upload_stats["summary"], summary_keys, _ = self._upload_tree(
@@ -116,21 +122,26 @@ class PublishStep(PipelineStep):
             self._refresh_manifest_metrics(manifest, merged_local)
             self._cleanup_participant_local(context, site, participant_id)
 
-            local_manifest_dir = context.logs_dir / "participant_manifests"
-            local_manifest_path = local_manifest_dir / f"{participant_id}.json"
-            write_local_manifest(manifest, local_manifest_path, run_id)
-            save_participant_manifest(
-                context.s3_client,
-                manifest,
-                run_id=run_id,
-                base_prefix=context.merged_base_prefix,
-            )
-            context.logger.info(
-                "[publish  ] Updated manifest for %s/%s at %s",
-                site,
-                participant_id,
-                context.merged_base_prefix,
-            )
+            if publish_participant_manifest:
+                local_manifest_dir = context.logs_dir / "participant_manifests"
+                local_manifest_path = local_manifest_dir / f"{participant_id}.json"
+                write_local_manifest(manifest, local_manifest_path, run_id)
+                save_participant_manifest(
+                    context.s3_client,
+                    manifest,
+                    run_id=run_id,
+                    base_prefix=context.merged_base_prefix,
+                )
+                context.logger.info(
+                    "[publish  ] Updated manifest for %s/%s at %s",
+                    site,
+                    participant_id,
+                    context.merged_base_prefix,
+                )
+            else:
+                context.logger.info(
+                    "[publish  ] Skipping merged manifest update for latest-measurement-only run with no merged output"
+                )
 
             if summary_state and context.summary_manifest_prefix:
                 summary_manifest = ensure_summary_manifest(context, participant_id)
@@ -328,6 +339,18 @@ class PublishStep(PipelineStep):
             existing.bytes_merged = latest_file.stat().st_size
             existing.files_merged = sum(1 for _ in metric_dir.glob("*.csv.gz"))
             manifest.metrics[metric] = existing
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _is_latest_measurement_only_run(context: RunContext) -> bool:
+        step_types = {
+            str(getattr(step, "type", "")).strip()
+            for step in getattr(getattr(context.spec, "processing", None), "steps", [])
+        }
+        if "latest_measurement_dates" not in step_types:
+            return False
+        data_transform_steps = {"merge", "redact", "summary", "rapids"}
+        return not bool(step_types & data_transform_steps)
 
     # ------------------------------------------------------------------
     def _upload_file(self, context: RunContext, path: Path, key: str, result: UploadResult) -> tuple[UploadResult, bool]:
