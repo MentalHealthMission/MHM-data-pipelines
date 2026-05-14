@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 import logging
 from typing import Any
 
@@ -68,6 +68,7 @@ class RunContext:
     published_merged_artifacts: List[Dict[str, Any]] = field(default_factory=list)
     step_state_bindings: Dict[str, str] = field(default_factory=dict)
     published_dataset_manifest_path: Optional[str] = None
+    merged_metrics_to_publish: Dict[str, Set[str]] = field(default_factory=dict)
     logger: logging.Logger = field(init=False)
 
     def __post_init__(self) -> None:

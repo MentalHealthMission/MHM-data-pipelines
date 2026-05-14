@@ -63,6 +63,7 @@ class PublishStep(PipelineStep):
 
             summary_state = context.summary_outputs.get(participant_id)
             latest_measurement_state = context.latest_measurement_outputs.get(participant_id)
+            merged_metrics_to_publish = getattr(context, "merged_metrics_to_publish", {}).get(participant_id)
 
             merged_local = context.merged_dir / site / participant_id
             merged_prefix = outputs.merged_prefix.format(run_id=run_id, site=site, participant_id=participant_id).rstrip("/")
@@ -72,6 +73,7 @@ class PublishStep(PipelineStep):
                 merged_prefix,
                 upload_stats["merged"],
                 collect_uploads=True,
+                include_top_level_dirs=merged_metrics_to_publish,
             )
             for file_path, s3_uri in merged_uploads:
                 metric = file_path.parent.name
@@ -301,6 +303,7 @@ class PublishStep(PipelineStep):
         filter_prefix: str = "",
         collect_keys: bool = False,
         collect_uploads: bool = False,
+        include_top_level_dirs: Optional[set[str]] = None,
     ) -> tuple[UploadResult, List[str], List[tuple[Path, str]]]:
         keys: List[str] = []
         uploads: List[tuple[Path, str]] = []
@@ -312,6 +315,9 @@ class PublishStep(PipelineStep):
             if filter_prefix and not file_path.name.startswith(filter_prefix):
                 continue
             rel = file_path.relative_to(root)
+            if include_top_level_dirs is not None:
+                if not rel.parts or rel.parts[0] not in include_top_level_dirs:
+                    continue
             key = f"{prefix}/{rel.as_posix()}"
             result, uploaded = self._upload_file(context, file_path, key, result)
             if collect_keys:

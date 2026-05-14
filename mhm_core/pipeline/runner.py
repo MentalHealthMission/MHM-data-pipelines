@@ -136,7 +136,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             context.logger.info("Processing participant %s", participant_id)
             for step in per_participant_steps:
                 pre_step_state_bindings = dict(context.step_state_bindings)
-                metrics = step.run(context)
+                metrics = _run_step_with_timing(context, step)
                 context.metrics[step.name][participant_id] = metrics
                 capture_declared_step_states(
                     context,
@@ -165,7 +165,7 @@ def cmd_run(args: argparse.Namespace) -> int:
                 len(batch),
             )
             pre_step_state_bindings = dict(context.step_state_bindings)
-            metrics = step.run(context)
+            metrics = _run_step_with_timing(context, step)
             capture_declared_step_states(
                 context,
                 step=step,
@@ -196,6 +196,18 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     context.logger.info("Pipeline run %s completed.", spec.run_id)
     return 0
+
+
+def _run_step_with_timing(context, step):
+    started = time.monotonic()
+    metrics = step.run(context)
+    duration_seconds = round(time.monotonic() - started, 3)
+    context.logger.info("[timing  ] Step %s completed in %.3fs", step.name, duration_seconds)
+    if isinstance(metrics, dict):
+        metrics = dict(metrics)
+        metrics.setdefault("duration_seconds", duration_seconds)
+        return metrics
+    return {"status": "ok", "result": metrics, "duration_seconds": duration_seconds}
 
 
 def _maybe_discover_participants(spec: RunSpec, s3_client, *, logger: logging.Logger) -> None:
