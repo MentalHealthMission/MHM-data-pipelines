@@ -100,6 +100,13 @@ def load_pipeline_publisher(profile: str | None, *, default_profile: str | None 
     return publishers[-1]
 
 
+def validate_profile_spec(spec, *, default_profile: str | None = None) -> List[str]:
+    errors: List[str] = []
+    for plugin in load_profile_plugins(getattr(spec, "profile", None), default_profile=default_profile):
+        errors.extend(plugin.validate_spec(spec))
+    return errors
+
+
 __all__ = [
     "PipelineProfilePlugin",
     "PluginTarget",
@@ -109,4 +116,5 @@ __all__ = [
     "load_profile_plugins",
     "registered_profile_plugins",
     "register_profile_plugin",
+    "validate_profile_spec",
 ]

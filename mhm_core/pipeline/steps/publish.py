@@ -11,12 +11,13 @@ import tarfile
 from .base import PipelineStep, PipelineStepOperationDescriptor, PipelineStepStateDescriptor
 from ..context import (
     RunContext,
-    active_participants,
+    active_entities,
+    entity_group,
     step_state_bindings,
 )
 from ..publishing import (
-    ParticipantPublishResult,
-    ParticipantPublishTarget,
+    EntityPublishResult,
+    EntityPublishTarget,
     PipelinePublisher,
     PublishResult,
 )
@@ -31,58 +32,26 @@ class PublishStep(PipelineStep):
         run_id = context.run_id
         publisher = self._publisher(context)
 
-        upload_stats = {
-            "merged": PublishResult(),
-            "logs": PublishResult(),
-        }
         target_stats: Dict[str, PublishResult] = {}
+        upload_stats = {"logs": PublishResult()}
 
         self.log(context, "Publishing outputs")
 
-        participants = active_participants(context)
+        entity_ids = active_entities(context)
 
-        for participant_id in participants:
-            site = context.participant_sites.get(participant_id)
-            if not site:
-                context.logger.warning("[publish  ] Site unknown for participant %s; skipping", participant_id)
+        for entity_id in entity_ids:
+            group = entity_group(context, entity_id)
+            if not group:
+                context.logger.warning("[publish  ] Group unknown for entity %s; skipping", entity_id)
                 continue
 
-            merged_metrics_to_publish = getattr(context, "merged_metrics_to_publish", {}).get(participant_id)
-
-            merged_local = context.merged_dir / site / participant_id
-            merged_prefix = outputs.merged_prefix.format(run_id=run_id, site=site, participant_id=participant_id).rstrip("/")
-            merged_result = publisher.publish_tree(
-                context,
-                local_root=merged_local,
-                destination=merged_prefix,
-                collect_uploads=True,
-                include_top_level_dirs=merged_metrics_to_publish,
-            )
-            upload_stats["merged"].merge(merged_result)
-            for artifact in merged_result.uploads:
-                metric = artifact.file_path.parent.name
-                context.pipeline_observer.record_published_merged_artifact(
-                    context,
-                    site=site,
-                    participant_id=participant_id,
-                    metric=metric,
-                    file_path=artifact.file_path,
-                    locator=artifact.locator,
-                )
-
-            publish_participant_manifest = context.pipeline_observer.should_publish_participant_manifest(
-                context,
-                participant_id=participant_id,
-                site=site,
-                merged_uploads=merged_result.uploads,
-                merged_local=merged_local,
-            )
-
             target_results: Dict[str, PublishResult] = {}
-            for target in context.pipeline_observer.participant_publish_targets(
+            primary_uploads = []
+            entity_manifest_published = False
+            for target in context.pipeline_observer.entity_publish_targets(
                 context,
-                participant_id=participant_id,
-                site=site,
+                entity_id=entity_id,
+                group=group,
             ):
                 target_result = publisher.publish_tree(
                     context,
@@ -95,27 +64,52 @@ class PublishStep(PipelineStep):
                 )
                 target_results.setdefault(target.name, PublishResult()).merge(target_result)
                 target_stats.setdefault(target.name, PublishResult()).merge(target_result)
+                if target.record_published_artifacts:
+                    for artifact in target_result.uploads:
+                        artifact_kind = artifact.file_path.parent.name
+                        context.pipeline_observer.record_published_artifact(
+                            context,
+                            entity_id=entity_id,
+                            group=group,
+                            target_name=target.name,
+                            artifact_kind=artifact_kind,
+                            file_path=artifact.file_path,
+                            locator=artifact.locator,
+                        )
+                if target.primary_output:
+                    primary_uploads.extend(target_result.uploads)
+                if target.publish_entity_manifest:
+                    should_publish = context.pipeline_observer.should_publish_entity_manifest(
+                        context,
+                        entity_id=entity_id,
+                        group=group,
+                        target_name=target.name,
+                        published_artifacts=target_result.uploads,
+                        output_local=target.local_root,
+                    )
+                    if publisher.publish_entity_manifest(
+                        context,
+                        entity_id=entity_id,
+                        group=group,
+                        output_local=target.local_root,
+                        published_artifacts=target_result.uploads,
+                        should_publish=should_publish,
+                        target_name=target.name,
+                    ):
+                        entity_manifest_published = True
                 if target.remove_after_publish:
                     self._cleanup_publish_target(context, target=target)
 
-            participant_manifest_published = publisher.publish_participant_manifest(
-                context,
-                participant_id=participant_id,
-                site=site,
-                merged_local=merged_local,
-                merged_uploads=merged_result.uploads,
-                should_publish=publish_participant_manifest,
-            )
-            self._cleanup_participant_local(context, site, participant_id)
+            self._cleanup_entity_local(context, group, entity_id)
 
-            context.pipeline_observer.after_participant_publish(
+            context.pipeline_observer.after_entity_publish(
                 context,
-                result=ParticipantPublishResult(
-                    participant_id=participant_id,
-                    site=site,
-                    merged_uploads=merged_result.uploads,
+                result=EntityPublishResult(
+                    entity_id=entity_id,
+                    group=group,
+                    primary_uploads=primary_uploads,
                     target_results=target_results,
-                    participant_manifest_published=participant_manifest_published,
+                    entity_manifest_published=entity_manifest_published,
                 ),
             )
 
@@ -140,13 +134,18 @@ class PublishStep(PipelineStep):
             if archive_key:
                 context.logger.info("[publish  ] Uploaded merged archive to %s", archive_key)
 
+        entity_group_map = getattr(context, "entity_groups", None) or getattr(context, "participant_sites", {})
         manifest = {
             "run_id": run_id,
             "started_at": context.start_time.isoformat() + "Z",
             "completed_at": datetime.utcnow().isoformat() + "Z",
+            "entities": [
+                {"entity_id": eid, "group": group}
+                for eid, group in entity_group_map.items()
+            ],
             "participants": [
-                {"participant_id": pid, "site": site}
-                for pid, site in context.participant_sites.items()
+                {"participant_id": eid, "site": group}
+                for eid, group in entity_group_map.items()
             ],
             "metrics": context.metrics,
         }
@@ -175,7 +174,6 @@ class PublishStep(PipelineStep):
 
         metrics = {
             "status": "ok",
-            "merged_files": upload_stats["merged"].files,
             "published_target_files": {
                 name: result.files
                 for name, result in sorted(target_stats.items())
@@ -232,7 +230,7 @@ class PublishStep(PipelineStep):
         return context.pipeline_publisher
 
     # ------------------------------------------------------------------
-    def _cleanup_publish_target(self, context: RunContext, *, target: ParticipantPublishTarget) -> None:
+    def _cleanup_publish_target(self, context: RunContext, *, target: EntityPublishTarget) -> None:
         if not target.local_root.exists():
             return
         for file_path in target.local_root.rglob("*"):
@@ -248,26 +246,28 @@ class PublishStep(PipelineStep):
                 file_path.unlink()
             except OSError as exc:  # pragma: no cover
                 context.logger.debug("[publish  ] Failed removing %s: %s", file_path, exc)
+        for dir_path in sorted((path for path in target.local_root.rglob("*") if path.is_dir()), reverse=True):
+            try:
+                dir_path.rmdir()
+            except OSError:
+                pass
+        try:
+            target.local_root.rmdir()
+        except OSError:
+            pass
 
     # ------------------------------------------------------------------
-    def _cleanup_participant_local(self, context: RunContext, site: str, participant_id: str) -> None:
+    def _cleanup_entity_local(self, context: RunContext, group: str, entity_id: str) -> None:
         import shutil
 
         cfg = context.spec.publishing
         if cfg.remove_local_raw_after_publish:
             prefix = context.spec.source.prefix.strip("/")
             candidates = [
-                context.raw_dir / prefix / site / participant_id,
-                context.raw_dir / site / participant_id,
+                context.raw_dir / prefix / group / entity_id,
+                context.raw_dir / group / entity_id,
             ]
             for candidate in candidates:
-                shutil.rmtree(candidate, ignore_errors=True)
-
-        if cfg.remove_local_merged_after_publish:
-            for candidate in [
-                context.merged_dir / site / participant_id,
-                context.merged_dir / context.spec.source.prefix.strip("/") / site / participant_id,
-            ]:
                 shutil.rmtree(candidate, ignore_errors=True)
 
     # ------------------------------------------------------------------

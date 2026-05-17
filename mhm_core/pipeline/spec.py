@@ -27,29 +27,65 @@ UUID_RE = re.compile(
 class SourceConfig:
     bucket: str
     prefix: str
-    participants: List[str]
+    entities: List[str]
     discover_all: bool = False
-    sites: List[str] = field(default_factory=list)
+    groups: List[str] = field(default_factory=list)
     source_state_manifest: str = ""
+    entity_group_map: Dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "SourceConfig":
         bucket = str(data.get("bucket", "")).strip()
         prefix = str(data.get("prefix", "")).strip().strip("/")
-        raw_participants = data.get("participants", [])
-        participants = [str(pid).strip() for pid in raw_participants if str(pid).strip()]
+        raw_entities = data.get("entities", data.get("participants", []))
+        entities = [str(entity).strip() for entity in raw_entities if str(entity).strip()]
         discover_all = bool(data.get("discover_all", False))
-        raw_sites = data.get("sites", [])
-        sites = [str(site).strip() for site in raw_sites if str(site).strip()]
+        raw_groups = data.get("groups", data.get("sites", []))
+        groups = [str(group).strip() for group in raw_groups if str(group).strip()]
+        raw_entity_group_map = data.get("entity_group_map", data.get("site_map", {}))
+        entity_group_map = {
+            str(entity).strip(): str(group).strip()
+            for entity, group in getattr(raw_entity_group_map, "items", lambda: [])()
+            if str(entity).strip() and str(group).strip()
+        }
         source_state_manifest = str(data.get("source_state_manifest", "")).strip()
         return cls(
             bucket=bucket,
             prefix=prefix,
-            participants=participants,
+            entities=entities,
             discover_all=discover_all,
-            sites=sites,
+            groups=groups,
             source_state_manifest=source_state_manifest,
+            entity_group_map=entity_group_map,
         )
+
+    @property
+    def participants(self) -> List[str]:
+        return self.entities
+
+    @participants.setter
+    def participants(self, value: Iterable[str]) -> None:
+        self.entities = [str(entity).strip() for entity in value if str(entity).strip()]
+
+    @property
+    def sites(self) -> List[str]:
+        return self.groups
+
+    @sites.setter
+    def sites(self, value: Iterable[str]) -> None:
+        self.groups = [str(group).strip() for group in value if str(group).strip()]
+
+    @property
+    def site_map(self) -> Dict[str, str]:
+        return self.entity_group_map
+
+    @site_map.setter
+    def site_map(self, value: Mapping[str, str]) -> None:
+        self.entity_group_map = {
+            str(entity).strip(): str(group).strip()
+            for entity, group in value.items()
+            if str(entity).strip() and str(group).strip()
+        }
 
 
 @dataclass
@@ -253,7 +289,10 @@ class RunSpec:
         )
 
     def iter_participants(self) -> Iterable[str]:
-        return list(self.source.participants)
+        return list(self.iter_entities())
+
+    def iter_entities(self) -> Iterable[str]:
+        return list(self.source.entities)
 
 
 def load_spec(
@@ -291,29 +330,20 @@ def validate_spec(spec: RunSpec) -> List[str]:
         errors.append("profile must be provided")
     if spec.priority not in {"low", "medium", "high", "urgent", "ludicrous"}:
         errors.append("priority must be one of: low, medium, high, urgent, ludicrous")
-    if not spec.source.bucket:
-        errors.append("source.bucket must be provided (or resolvable via source.source_state_manifest)")
-    if not spec.source.prefix:
-        errors.append("source.prefix must be provided (or resolvable via source.source_state_manifest)")
-
-    participants = spec.source.participants
-    if not participants and not spec.source.discover_all:
-        errors.append("source.participants must contain at least one participant ID (or set discover_all=true)")
+    entities = list(spec.iter_entities())
+    if not entities and not spec.source.discover_all:
+        errors.append("source.entities must contain at least one entity ID (or set discover_all=true)")
     else:
-        duplicates = _find_duplicates(participants)
+        duplicates = _find_duplicates(entities)
         if duplicates:
-            errors.append(f"duplicate participant IDs detected: {sorted(duplicates)}")
-        invalid = [pid for pid in participants if not _is_uuid(pid)]
+            errors.append(f"duplicate entity IDs detected: {sorted(duplicates)}")
+        invalid = [entity for entity in entities if not _is_safe_identifier(entity)]
         if invalid:
-            errors.append(f"participant IDs must be valid UUIDs: {invalid}")
-    invalid_sites = [site for site in spec.source.sites if not site.strip()]
-    if invalid_sites:
-        errors.append("source.sites must contain non-empty site names")
+            errors.append(f"entity IDs must be non-empty path-safe identifiers: {invalid}")
+    invalid_groups = [group for group in spec.source.groups if not group.strip()]
+    if invalid_groups:
+        errors.append("source.groups must contain non-empty group names")
 
-    if not spec.outputs.merged_prefix:
-        errors.append("outputs.merged_prefix must be configured")
-    if not spec.outputs.summary_prefix:
-        errors.append("outputs.summary_prefix must be configured")
     if not spec.outputs.manifest_key:
         errors.append("outputs.manifest_key must be configured")
 
@@ -329,8 +359,8 @@ def validate_spec(spec: RunSpec) -> List[str]:
         errors.append(f"metrics cannot be both included and excluded: {sorted(shared)}")
 
     batching_strategy = spec.batching.strategy
-    if batching_strategy not in {"none", "site", "participant_count"}:
-        errors.append("batching.strategy must be one of: none, site, participant_count")
+    if batching_strategy not in {"none", "group", "site", "participant_count"}:
+        errors.append("batching.strategy must be one of: none, group, site, participant_count")
     if batching_strategy == "participant_count":
         if spec.batching.max_participants is None or spec.batching.max_participants <= 0:
             errors.append("batching.max_participants must be a positive integer when batching.strategy=participant_count")
@@ -457,6 +487,15 @@ def _is_uuid(value: str) -> bool:
     return bool(UUID_RE.match(value))
 
 
+def is_uuid_identifier(value: str) -> bool:
+    return _is_uuid(value)
+
+
+def _is_safe_identifier(value: str) -> bool:
+    text = str(value).strip()
+    return bool(text) and "/" not in text and "\\" not in text and text not in {".", ".."}
+
+
 def _find_duplicates(values: Iterable[str]) -> set[str]:
     seen: set[str] = set()
     duplicates: set[str] = set()
@@ -479,6 +518,7 @@ __all__ = [
     "ProcessingConfig",
     "PublishingConfig",
     "StepSpec",
+    "is_uuid_identifier",
     "load_spec",
     "validate_spec",
 ]

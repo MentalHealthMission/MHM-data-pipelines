@@ -27,3 +27,7 @@ class PipelineProfilePlugin(ABC):
     def create_publisher(self) -> "PipelinePublisher | None":
         """Return an optional publisher for profile-specific output handling."""
         return None
+
+    def validate_spec(self, spec) -> list[str]:
+        """Return profile-specific validation errors for a loaded run spec."""
+        return []

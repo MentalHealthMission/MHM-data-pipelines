@@ -142,6 +142,64 @@ raise SystemExit(1 if loaded else 0)
             self.assertEqual(load_core_spec(str(path)).profile, "base")
             self.assertEqual(load_connect_spec(str(path)).profile, "connect")
 
+    def test_core_validation_allows_neutral_entity_specs(self) -> None:
+        from mhm_core.pipeline.spec import RunSpec, validate_spec
+
+        spec = RunSpec.from_dict(
+            {
+                "run_id": "neutral-entity-validation",
+                "profile": "base",
+                "created_by": "tests",
+                "created_at": "2026-05-17T00:00:00Z",
+                "priority": "medium",
+                "source": {
+                    "entities": ["document-alpha"],
+                    "groups": ["collection-a"],
+                    "entity_group_map": {"document-alpha": "collection-a"},
+                },
+                "workspace": {"root": "/tmp"},
+                "outputs": {
+                    "manifest_key": "memory://manifests/{run_id}.json",
+                    "logs_prefix": "memory://logs/{run_id}/",
+                },
+                "processing": {"steps": [{"type": "noop"}]},
+                "publishing": {},
+            }
+        )
+
+        self.assertEqual(validate_spec(spec), [])
+
+    def test_connect_validation_keeps_uuid_and_s3_shaped_requirements(self) -> None:
+        from connect_summary.pipeline.spec import validate_spec
+        from mhm_core.pipeline.spec import RunSpec
+
+        spec = RunSpec.from_dict(
+            {
+                "run_id": "connect-validation",
+                "profile": "connect",
+                "created_by": "tests",
+                "created_at": "2026-05-17T00:00:00Z",
+                "priority": "medium",
+                "source": {
+                    "participants": ["document-alpha"],
+                    "sites": ["SiteA"],
+                },
+                "workspace": {"root": "/tmp"},
+                "outputs": {
+                    "manifest_key": "s3://example/manifests/{run_id}.json",
+                    "logs_prefix": "s3://example/logs/{run_id}/",
+                },
+                "processing": {"steps": [{"type": "publish"}]},
+                "publishing": {},
+            }
+        )
+
+        errors = validate_spec(spec)
+        self.assertIn("source.bucket must be provided for CONNECT pipeline specs", errors)
+        self.assertIn("source.prefix must be provided for CONNECT pipeline specs", errors)
+        self.assertIn("outputs.summary_prefix must be configured for CONNECT pipeline specs", errors)
+        self.assertIn("CONNECT participant IDs must be valid UUIDs: ['document-alpha']", errors)
+
     def test_connect_profile_supplies_connect_provenance_observer(self) -> None:
         from connect_summary.pipeline.bootstrap import register_connect_pipeline_profile
         from connect_summary.pipeline.publish_observer import ConnectPublishObserver
@@ -347,6 +405,14 @@ class TargetObserver(PipelineObserver):
     def participant_publish_targets(self, context, *, participant_id, site):
         return [
             ParticipantPublishTarget(
+                name="artifact",
+                local_root=context.merged_dir / site / participant_id,
+                destination=f"memory://artifacts/{site}/{participant_id}/",
+                collect_uploads=True,
+                publish_entity_manifest=True,
+                primary_output=True,
+            ),
+            ParticipantPublishTarget(
                 name="analysis",
                 local_root=context.summary_dir,
                 destination=f"memory://analysis/{site}/{participant_id}/",
@@ -412,9 +478,9 @@ with tempfile.TemporaryDirectory() as tmp_dir:
         pipeline_publisher=publisher,
     )
     result = PublishStep({}).run(context)
-    assert result["merged_files"] == 1, result
+    assert result["artifact_files"] == 1, result
     assert result["analysis_files"] == 1, result
-    assert result["published_target_files"] == {"analysis": 1}, result
+    assert result["published_target_files"] == {"analysis": 1, "artifact": 1}, result
     assert publisher.participant_manifests == [(participant_id, "SiteA", True, 1)], publisher.participant_manifests
     assert any(destination == "memory://manifests/core-publish-smoke.json" for _, destination in publisher.files), publisher.files
 

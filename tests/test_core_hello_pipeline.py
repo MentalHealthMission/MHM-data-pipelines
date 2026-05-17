@@ -51,8 +51,8 @@ class FakeSession:
 
 
 entities = [
-    "00000000-0000-0000-0000-000000000101",
-    "00000000-0000-0000-0000-000000000102",
+    "document-alpha",
+    "document-beta",
 ]
 groups = {
     entities[0]: "alpha-group",
@@ -68,18 +68,15 @@ spec = RunSpec.from_dict(
         "created_at": "2026-05-17T00:00:00Z",
         "priority": "medium",
         "source": {
-            "bucket": "hello-source",
-            "prefix": "collections",
-            "participants": entities,
-            "sites": sorted(set(groups.values())),
+            "entities": entities,
+            "groups": sorted(set(groups.values())),
+            "entity_group_map": groups,
         },
         "workspace": {
             "root": "/tmp",
             "run_subdir": "hello-core-harness/{run_id}",
         },
         "outputs": {
-            "merged_prefix": "hello://merged/{site}/{participant_id}/",
-            "summary_prefix": "hello://unused-required-output/{site}/{participant_id}/",
             "manifest_key": "hello://run-manifests/{run_id}.json",
             "logs_prefix": "hello://run-logs/{run_id}/",
         },
@@ -98,7 +95,6 @@ spec = RunSpec.from_dict(
         },
     }
 )
-spec.source.site_map = groups
 errors = validate_spec(spec)
 if errors:
     raise AssertionError(errors)
@@ -117,6 +113,7 @@ with tempfile.TemporaryDirectory() as tmp_dir:
     for batch in batches:
         context.batch_participants = list(batch)
         for entity_id in batch:
+            context.current_entity = entity_id
             context.current_participant = entity_id
             for step_index, step in enumerate(steps, start=1):
                 pre_step_state = context.pipeline_observer.before_step(
@@ -170,18 +167,18 @@ print(json.dumps(payload, sort_keys=True))
 
         self.assertEqual(payload["loaded_project_modules"], [])
         self.assertEqual(payload["steps"], ["hello_collect", "hello_render", "publish"])
-        self.assertEqual(payload["batches"], [["00000000-0000-0000-0000-000000000101", "00000000-0000-0000-0000-000000000102"]])
+        self.assertEqual(payload["batches"], [["document-alpha", "document-beta"]])
         self.assertEqual(payload["record_count"], 2)
         self.assertEqual(payload["report_count"], 2)
         self.assertEqual(payload["published_artifact_count"], 2)
         for entity_id, publish_result in payload["publish_results"].items():
-            self.assertTrue(entity_id.startswith("00000000-0000-0000-0000-00000000010"))
+            self.assertTrue(entity_id.startswith("document-"))
             self.assertEqual(len(publish_result["report_keys"]), 1)
             self.assertTrue(publish_result["participant_manifest_published"])
         for metrics in payload["publish_metrics"].values():
-            self.assertEqual(metrics["merged_files"], 1)
+            self.assertEqual(metrics["artifact_files"], 1)
             self.assertEqual(metrics["hello_report_files"], 1)
-            self.assertEqual(metrics["published_target_files"], {"hello_report": 1})
+            self.assertEqual(metrics["published_target_files"], {"artifact": 1, "hello_report": 1})
         self.assertTrue(
             any(path.endswith("/greeting_artifacts/greeting.txt") for path in payload["published_files"]),
             payload["published_files"],

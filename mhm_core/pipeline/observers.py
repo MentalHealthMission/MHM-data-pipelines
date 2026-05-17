@@ -7,6 +7,8 @@ from typing import Dict, Iterable, List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover
     from .publishing import (
+        EntityPublishResult,
+        EntityPublishTarget,
         ParticipantPublishResult,
         ParticipantPublishTarget,
         PublishedArtifact,
@@ -57,6 +59,44 @@ class PipelineObserver:
     ) -> None:
         return None
 
+    def record_published_artifact(
+        self,
+        context,
+        *,
+        entity_id: str,
+        group: str,
+        target_name: str,
+        artifact_kind: str,
+        file_path: Path,
+        locator: str,
+    ) -> None:
+        self.record_published_merged_artifact(
+            context,
+            site=group,
+            participant_id=entity_id,
+            metric=artifact_kind,
+            file_path=file_path,
+            locator=locator,
+        )
+
+    def should_publish_entity_manifest(
+        self,
+        context,
+        *,
+        entity_id: str,
+        group: str,
+        target_name: str,
+        published_artifacts: List["PublishedArtifact"],
+        output_local: Path,
+    ) -> bool:
+        return self.should_publish_participant_manifest(
+            context,
+            participant_id=entity_id,
+            site=group,
+            merged_uploads=published_artifacts,
+            merged_local=output_local,
+        )
+
     def should_publish_participant_manifest(
         self,
         context,
@@ -80,6 +120,19 @@ class PipelineObserver:
     ) -> List["ParticipantPublishTarget"]:
         return []
 
+    def entity_publish_targets(
+        self,
+        context,
+        *,
+        entity_id: str,
+        group: str,
+    ) -> List["EntityPublishTarget"]:
+        return self.participant_publish_targets(
+            context,
+            participant_id=entity_id,
+            site=group,
+        )
+
     def finalize_run(
         self,
         context,
@@ -96,6 +149,14 @@ class PipelineObserver:
         result: "ParticipantPublishResult",
     ) -> None:
         return None
+
+    def after_entity_publish(
+        self,
+        context,
+        *,
+        result: "EntityPublishResult",
+    ) -> None:
+        self.after_participant_publish(context, result=result)
 
 
 class NoOpPipelineObserver(PipelineObserver):
@@ -168,6 +229,28 @@ class CompositePipelineObserver(PipelineObserver):
                 locator=locator,
             )
 
+    def record_published_artifact(
+        self,
+        context,
+        *,
+        entity_id: str,
+        group: str,
+        target_name: str,
+        artifact_kind: str,
+        file_path: Path,
+        locator: str,
+    ) -> None:
+        for observer in self._observers:
+            observer.record_published_artifact(
+                context,
+                entity_id=entity_id,
+                group=group,
+                target_name=target_name,
+                artifact_kind=artifact_kind,
+                file_path=file_path,
+                locator=locator,
+            )
+
     def finalize_run(
         self,
         context,
@@ -206,6 +289,28 @@ class CompositePipelineObserver(PipelineObserver):
             for observer in self._observers
         )
 
+    def should_publish_entity_manifest(
+        self,
+        context,
+        *,
+        entity_id: str,
+        group: str,
+        target_name: str,
+        published_artifacts: List["PublishedArtifact"],
+        output_local: Path,
+    ) -> bool:
+        return all(
+            observer.should_publish_entity_manifest(
+                context,
+                entity_id=entity_id,
+                group=group,
+                target_name=target_name,
+                published_artifacts=published_artifacts,
+                output_local=output_local,
+            )
+            for observer in self._observers
+        )
+
     def run_publish_artifacts(self, context) -> List["RunPublishArtifact"]:
         artifacts: List["RunPublishArtifact"] = []
         for observer in self._observers:
@@ -230,6 +335,24 @@ class CompositePipelineObserver(PipelineObserver):
             )
         return targets
 
+    def entity_publish_targets(
+        self,
+        context,
+        *,
+        entity_id: str,
+        group: str,
+    ) -> List["EntityPublishTarget"]:
+        targets: List["EntityPublishTarget"] = []
+        for observer in self._observers:
+            targets.extend(
+                observer.entity_publish_targets(
+                    context,
+                    entity_id=entity_id,
+                    group=group,
+                )
+            )
+        return targets
+
     def after_participant_publish(
         self,
         context,
@@ -238,6 +361,15 @@ class CompositePipelineObserver(PipelineObserver):
     ) -> None:
         for observer in self._observers:
             observer.after_participant_publish(context, result=result)
+
+    def after_entity_publish(
+        self,
+        context,
+        *,
+        result: "EntityPublishResult",
+    ) -> None:
+        for observer in self._observers:
+            observer.after_entity_publish(context, result=result)
 
 
 __all__ = [

@@ -18,7 +18,7 @@ from botocore.exceptions import ClientError
 from .capabilities import ParticipantSelectionCapability
 from .context import create_run_context, resolve_output_prefix
 from .discovery import discover_participants
-from .plugins import load_pipeline_observer, load_pipeline_publisher
+from .plugins import load_pipeline_observer, load_pipeline_publisher, validate_profile_spec
 from .queue import PRIORITY_RANK, select_next_spec
 from .refresh_plan import build_refresh_plan
 from .spec import DEFAULT_PIPELINE_PROFILE, RunSpec, load_spec, validate_spec
@@ -75,12 +75,23 @@ def cmd_validate(
     s3_client = session.client("s3")
     spec = load_spec(args.spec, s3_client=s3_client, default_profile=default_pipeline_profile)
     _maybe_discover_participants(spec, s3_client, logger=logging.getLogger("mhm_core.pipeline.validate"))
-    errors = validate_spec(spec)
+    errors = validate_spec(spec) + validate_profile_spec(spec, default_profile=default_pipeline_profile)
     if errors:
         for err in errors:
             print(f"ERROR: {err}", file=sys.stderr)
         return 1
-    print(json.dumps({"status": "ok", "run_id": spec.run_id, "participants": len(spec.source.participants)}, indent=2))
+    entity_count = len(list(spec.iter_entities()))
+    print(
+        json.dumps(
+            {
+                "status": "ok",
+                "run_id": spec.run_id,
+                "entities": entity_count,
+                "participants": entity_count,
+            },
+            indent=2,
+        )
+    )
     return 0
 
 
@@ -92,7 +103,7 @@ def cmd_run(
     session = boto3.session.Session(profile_name=args.profile) if args.profile else boto3.session.Session()
     spec = load_spec(args.spec, s3_client=session.client("s3"), default_profile=default_pipeline_profile)
     _maybe_discover_participants(spec, session.client("s3"), logger=logging.getLogger("mhm_core.pipeline.discovery"))
-    errors = validate_spec(spec)
+    errors = validate_spec(spec) + validate_profile_spec(spec, default_profile=default_pipeline_profile)
     if errors:
         for err in errors:
             logging.error(err)
@@ -106,7 +117,8 @@ def cmd_run(
     context.pipeline_observer = load_pipeline_observer(spec.profile, default_profile=default_pipeline_profile)
     context.pipeline_publisher = load_pipeline_publisher(spec.profile, default_profile=default_pipeline_profile)
     context.logger.info("Starting pipeline run %s", spec.run_id)
-    context.participant_sites.update(getattr(spec.source, "site_map", {}))
+    context.entity_groups.update(getattr(spec.source, "entity_group_map", {}))
+    context.participant_sites.update(context.entity_groups)
     context.pipeline_observer.on_run_start(context)
 
     steps = build_steps(spec)
@@ -122,7 +134,7 @@ def cmd_run(
         )
     else:
         context.summary_manifest_prefix = None
-    participants = list(spec.iter_participants())
+    participants = list(spec.iter_entities())
     participant_selection = _participant_selection_capabilities(spec, steps)
     participants = _filter_participants_for_required_source_metrics(context, participants, participant_selection)
     participants = _filter_completed_participants(
@@ -130,7 +142,7 @@ def cmd_run(
         participants,
         skip_completed_resume=any(capability.skip_completed_resume for capability in participant_selection),
     )
-    spec.source.participants = list(participants)
+    spec.source.entities = list(participants)
     context.metrics = {step.name: {} for step in steps}
     batches = _build_batches(spec, participants, context.participant_sites)
     total_batches = len(batches)
@@ -245,7 +257,7 @@ def _maybe_discover_participants(spec: RunSpec, s3_client, *, logger: logging.Lo
         sites=getattr(spec.source, "sites", None),
     )
     spec.source.participants = participants
-    spec.source.site_map = site_map  # type: ignore[attr-defined]
+    spec.source.site_map = site_map
     logger.info("Discovered %d participants across %d sites", len(participants), len(set(site_map.values())))
 
 
@@ -253,14 +265,14 @@ def _build_batches(spec: RunSpec, participants: list[str], participant_sites: di
     strategy = getattr(spec.batching, "strategy", "none")
     max_participants = getattr(spec.batching, "max_participants", None)
 
-    if strategy == "site":
+    if strategy in {"group", "site"}:
         grouped: dict[str, list[str]] = defaultdict(list)
         for participant_id in participants:
             site = participant_sites.get(participant_id, "")
             grouped[site].append(participant_id)
 
         ordered_sites: list[str] = []
-        for site in getattr(spec.source, "sites", []):
+        for site in getattr(spec.source, "groups", getattr(spec.source, "sites", [])):
             if site in grouped and site not in ordered_sites:
                 ordered_sites.append(site)
         for site in sorted(grouped):

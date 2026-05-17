@@ -41,8 +41,8 @@ class RunPublishArtifact:
 
 
 @dataclass(frozen=True)
-class ParticipantPublishTarget:
-    """A profile-declared participant-level output target."""
+class EntityPublishTarget:
+    """A profile-declared entity-level output target."""
 
     name: str
     local_root: Path
@@ -52,28 +52,47 @@ class ParticipantPublishTarget:
     collect_uploads: bool = False
     include_top_level_dirs: Optional[Set[str]] = None
     remove_after_publish: bool = False
+    publish_entity_manifest: bool = False
+    record_published_artifacts: bool = False
+    primary_output: bool = False
 
 
 @dataclass(frozen=True)
-class ParticipantPublishResult:
-    """Outputs uploaded for one participant during a publish step."""
+class EntityPublishResult:
+    """Outputs uploaded for one entity during a publish step."""
 
-    participant_id: str
-    site: str
-    merged_uploads: List[PublishedArtifact] = field(default_factory=list)
+    entity_id: str
+    group: str
+    primary_uploads: List[PublishedArtifact] = field(default_factory=list)
     target_results: Dict[str, PublishResult] = field(default_factory=dict)
-    participant_manifest_published: bool = False
+    entity_manifest_published: bool = False
 
     def target_keys(self, target_name: str) -> List[str]:
         result = self.target_results.get(target_name)
         return list(result.keys) if result else []
 
+    @property
+    def participant_id(self) -> str:
+        return self.entity_id
+
+    @property
+    def site(self) -> str:
+        return self.group
+
+    @property
+    def merged_uploads(self) -> List[PublishedArtifact]:
+        return self.primary_uploads
+
+    @property
+    def participant_manifest_published(self) -> bool:
+        return self.entity_manifest_published
+
 
 class PipelinePublisher:
     """Destination adapter used by the generic publish step.
 
-    The core publish step decides what logical outputs exist. Concrete
-    publishers decide how those outputs are materialized, uploaded, or ignored.
+    Profile observers decide what logical outputs exist. Concrete publishers
+    decide how those outputs are materialized, uploaded, or ignored.
     """
 
     def publish_tree(
@@ -92,6 +111,26 @@ class PipelinePublisher:
     def publish_file(self, context, *, file_path: Path, destination: str) -> PublishResult:
         return PublishResult()
 
+    def publish_entity_manifest(
+        self,
+        context,
+        *,
+        entity_id: str,
+        group: str,
+        output_local: Path,
+        published_artifacts: List[PublishedArtifact],
+        should_publish: bool,
+        target_name: str,
+    ) -> bool:
+        return self.publish_participant_manifest(
+            context,
+            participant_id=entity_id,
+            site=group,
+            merged_local=output_local,
+            merged_uploads=published_artifacts,
+            should_publish=should_publish,
+        )
+
     def publish_participant_manifest(
         self,
         context,
@@ -109,7 +148,13 @@ class NoOpPipelinePublisher(PipelinePublisher):
     """Publisher for core-only runs that do not configure an output backend."""
 
 
+ParticipantPublishResult = EntityPublishResult
+ParticipantPublishTarget = EntityPublishTarget
+
+
 __all__ = [
+    "EntityPublishResult",
+    "EntityPublishTarget",
     "NoOpPipelinePublisher",
     "ParticipantPublishResult",
     "ParticipantPublishTarget",

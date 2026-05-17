@@ -50,6 +50,9 @@ class RunContext:
     s3_client: boto3.client
     start_time: datetime = field(default_factory=datetime.utcnow)
     metrics: Dict[str, object] = field(default_factory=dict)
+    entity_groups: Dict[str, str] = field(default_factory=dict)
+    batch_entities: Optional[List[str]] = None
+    current_entity: Optional[str] = None
     participant_sites: Dict[str, str] = field(default_factory=dict)
     batch_participants: Optional[List[str]] = None
     current_participant: Optional[str] = None
@@ -80,6 +83,10 @@ class RunContext:
     def __post_init__(self) -> None:
         self.logger = logging.getLogger(f"mhm_core.pipeline.{self.run_id}")
         self.logger.setLevel(logging.INFO)
+        if self.participant_sites and not self.entity_groups:
+            self.entity_groups.update(self.participant_sites)
+        if self.entity_groups and not self.participant_sites:
+            self.participant_sites.update(self.entity_groups)
         _bind_compat_extension_state(self)
 
     def ensure_directories(self) -> None:
@@ -135,9 +142,9 @@ def create_run_context(
     file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)-7s %(message)s"))
     context.logger.addHandler(file_handler)
 
-    site_map = getattr(spec.source, "site_map", None)
-    if isinstance(site_map, dict):
-        context.participant_sites.update(site_map)
+    group_map = getattr(spec.source, "entity_group_map", None)
+    if isinstance(group_map, dict):
+        set_entity_groups(context, group_map)
     if spec.source.discover_all and not spec.source.participants:
         participants, discovered_map = discover_participants(
             s3_client,
@@ -147,7 +154,8 @@ def create_run_context(
             sites=getattr(spec.source, "sites", None),
         )
         spec.source.participants = participants
-        context.participant_sites.update(discovered_map)
+        spec.source.entity_group_map.update(discovered_map)
+        set_entity_groups(context, discovered_map)
         context.logger.info("[spec] Discovered %d participants via discover_all", len(participants))
 
     return context
@@ -159,9 +167,14 @@ def resolve_output_base_prefix(template: str, *, run_id: str) -> str:
         site="{site}",
         participant_id="{participant_id}",
         participant="{participant}",
+        group="{group}",
+        entity_id="{entity_id}",
+        entity="{entity}",
     )
     if "{site}" in rendered:
         rendered = rendered.split("{site}", 1)[0]
+    if "{group}" in rendered:
+        rendered = rendered.split("{group}", 1)[0]
     return rendered.rstrip("/") or rendered
 
 
@@ -171,6 +184,9 @@ def resolve_output_prefix(template: str, *, run_id: str) -> str:
         site="",
         participant_id="",
         participant="",
+        group="",
+        entity_id="",
+        entity="",
     ).rstrip("/")
 
 
@@ -187,6 +203,33 @@ def ensure_participant_manifest(context: RunContext, participant_id: str) -> Par
         )
         context.participant_manifests[participant_id] = manifest
     return context.participant_manifests[participant_id]
+
+
+def set_entity_groups(context: RunContext, mapping: Dict[str, str]) -> None:
+    cleaned = {
+        str(entity_id).strip(): str(group).strip()
+        for entity_id, group in mapping.items()
+        if str(entity_id).strip() and str(group).strip()
+    }
+    if not hasattr(context, "entity_groups"):
+        setattr(context, "entity_groups", {})
+    if not hasattr(context, "participant_sites"):
+        setattr(context, "participant_sites", {})
+    context.entity_groups.update(cleaned)
+    context.participant_sites.update(cleaned)
+
+
+def entity_group(context: RunContext, entity_id: str) -> str:
+    entity_groups_map = getattr(context, "entity_groups", {})
+    participant_sites_map = getattr(context, "participant_sites", {})
+    if entity_id in entity_groups_map:
+        return entity_groups_map[entity_id]
+    if entity_id in participant_sites_map:
+        group = participant_sites_map[entity_id]
+        if hasattr(context, "entity_groups"):
+            context.entity_groups[entity_id] = group
+        return group
+    return ""
 
 
 def extension_state(context: RunContext, namespace: str) -> Dict[str, Any]:
@@ -267,12 +310,30 @@ def ensure_latest_measurement_manifest(context: RunContext, participant_id: str)
 
 
 def active_participants(context: RunContext) -> List[str]:
-    if context.current_participant:
-        return [context.current_participant]
-    if context.batch_participants:
-        return list(context.batch_participants)
-    if context.participant_sites:
-        return list(context.participant_sites.keys())
+    return active_entities(context)
+
+
+def active_entities(context: RunContext) -> List[str]:
+    current_entity = getattr(context, "current_entity", None)
+    current_participant = getattr(context, "current_participant", None)
+    batch_entities = getattr(context, "batch_entities", None)
+    batch_participants = getattr(context, "batch_participants", None)
+    entity_groups_map = getattr(context, "entity_groups", {})
+    participant_sites_map = getattr(context, "participant_sites", {})
+    if current_entity:
+        return [current_entity]
+    if current_participant:
+        return [current_participant]
+    if batch_entities:
+        return list(batch_entities)
+    if batch_participants:
+        return list(batch_participants)
+    if entity_groups_map:
+        return list(entity_groups_map.keys())
+    if participant_sites_map:
+        return list(participant_sites_map.keys())
+    if hasattr(context.spec, "iter_entities"):
+        return list(context.spec.iter_entities())
     return list(context.spec.iter_participants())
 
 
@@ -280,8 +341,10 @@ __all__ = [
     "RunContext",
     "SummaryState",
     "LatestMeasurementState",
+    "active_entities",
     "create_run_context",
     "active_participants",
+    "entity_group",
     "ensure_participant_manifest",
     "ensure_summary_manifest",
     "ensure_latest_measurement_manifest",
@@ -290,6 +353,7 @@ __all__ = [
     "published_merged_artifacts",
     "resolve_output_base_prefix",
     "resolve_output_prefix",
+    "set_entity_groups",
     "step_state_bindings",
     "summary_outputs",
 ]
