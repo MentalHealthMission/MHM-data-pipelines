@@ -14,6 +14,7 @@ import boto3
 from .spec import RunSpec
 from .discovery import discover_participants
 from .manifest import ParticipantManifest, load_participant_manifest
+from .observers import NoOpPipelineObserver, PipelineObserver
 from .refresh_plan import RefreshPlan, SummaryCachePolicy
 from .latest_measurement_manifest import LatestMeasurementManifest, load_latest_measurement_manifest
 from .summary_manifest import SummaryManifest, load_summary_manifest
@@ -69,6 +70,7 @@ class RunContext:
     step_state_bindings: Dict[str, str] = field(default_factory=dict)
     published_dataset_manifest_path: Optional[str] = None
     merged_metrics_to_publish: Dict[str, Set[str]] = field(default_factory=dict)
+    pipeline_observer: PipelineObserver = field(default_factory=NoOpPipelineObserver)
     logger: logging.Logger = field(init=False)
 
     def __post_init__(self) -> None:

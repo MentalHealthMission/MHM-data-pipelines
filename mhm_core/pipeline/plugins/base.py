@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Dict, Type
 
 if TYPE_CHECKING:  # pragma: no cover
+    from ..observers import PipelineObserver
     from ..steps.base import PipelineStep
 
 
@@ -17,3 +18,7 @@ class PipelineProfilePlugin(ABC):
     @abstractmethod
     def register_steps(self, registry: Dict[str, Type["PipelineStep"]]) -> None:
         """Populate or override step handlers in the supplied registry."""
+
+    def create_observer(self) -> "PipelineObserver | None":
+        """Return an optional observer for profile-specific side effects."""
+        return None

@@ -17,8 +17,8 @@ from botocore.exceptions import ClientError
 
 from .context import create_run_context, resolve_output_prefix
 from .discovery import discover_participants
+from .plugins import load_pipeline_observer
 from .queue import PRIORITY_RANK, select_next_spec
-from .provenance import capture_declared_step_operations, capture_declared_step_states, initialize_run_provenance
 from .refresh_plan import build_refresh_plan
 from .spec import RunSpec, load_spec, validate_spec
 from .steps import build_steps
@@ -90,9 +90,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         shutil.rmtree(run_dir, ignore_errors=True)
 
     context = create_run_context(spec, boto3_session=session, spec_locator=args.spec)
+    context.pipeline_observer = load_pipeline_observer(spec.profile)
     context.logger.info("Starting pipeline run %s", spec.run_id)
     context.participant_sites.update(getattr(spec.source, "site_map", {}))
-    initialize_run_provenance(context)
+    context.pipeline_observer.on_run_start(context)
 
     steps = build_steps(spec)
     per_participant_steps = [step for step in steps if getattr(step, "run_per_participant", True)]
@@ -135,21 +136,20 @@ def cmd_run(args: argparse.Namespace) -> int:
             context.current_participant = participant_id
             context.logger.info("Processing participant %s", participant_id)
             for step in per_participant_steps:
-                pre_step_state_bindings = dict(context.step_state_bindings)
+                step_index = int(getattr(step, "_step_index", 0) or 0)
+                pre_step_state = context.pipeline_observer.before_step(
+                    context,
+                    step=step,
+                    step_index=step_index,
+                )
                 metrics = _run_step_with_timing(context, step)
                 context.metrics[step.name][participant_id] = metrics
-                capture_declared_step_states(
+                context.pipeline_observer.after_step(
                     context,
                     step=step,
-                    step_index=int(getattr(step, "_step_index", 0) or 0),
+                    step_index=step_index,
                     metrics=metrics,
-                )
-                capture_declared_step_operations(
-                    context,
-                    step=step,
-                    step_index=int(getattr(step, "_step_index", 0) or 0),
-                    metrics=metrics,
-                    pre_step_state_bindings=pre_step_state_bindings,
+                    pre_step_state=pre_step_state,
                 )
             if _should_suspend(context, queue_prefix, last_suspend_probe):
                 return SUSPEND_EXIT_CODE
@@ -164,20 +164,19 @@ def cmd_run(args: argparse.Namespace) -> int:
                 total_batches,
                 len(batch),
             )
-            pre_step_state_bindings = dict(context.step_state_bindings)
-            metrics = _run_step_with_timing(context, step)
-            capture_declared_step_states(
+            step_index = int(getattr(step, "_step_index", 0) or 0)
+            pre_step_state = context.pipeline_observer.before_step(
                 context,
                 step=step,
-                step_index=int(getattr(step, "_step_index", 0) or 0),
-                metrics=metrics,
+                step_index=step_index,
             )
-            capture_declared_step_operations(
+            metrics = _run_step_with_timing(context, step)
+            context.pipeline_observer.after_step(
                 context,
                 step=step,
-                step_index=int(getattr(step, "_step_index", 0) or 0),
+                step_index=step_index,
                 metrics=metrics,
-                pre_step_state_bindings=pre_step_state_bindings,
+                pre_step_state=pre_step_state,
             )
             key = "all" if total_batches == 1 else batch_label
             if total_batches == 1:

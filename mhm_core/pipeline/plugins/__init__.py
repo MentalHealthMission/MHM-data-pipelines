@@ -5,6 +5,7 @@ from __future__ import annotations
 from importlib import import_module
 from typing import Dict, List
 
+from ..observers import CompositePipelineObserver, NoOpPipelineObserver, PipelineObserver
 from .base import PipelineProfilePlugin
 
 _PLUGIN_CLASS_MAP: Dict[str, str] = {
@@ -41,4 +42,22 @@ def load_profile_plugin(profile: str | None) -> PipelineProfilePlugin:
     return plugins[-1]
 
 
-__all__ = ["PipelineProfilePlugin", "load_profile_plugin", "load_profile_plugins"]
+def load_pipeline_observer(profile: str | None) -> PipelineObserver:
+    observers = [
+        observer
+        for plugin in load_profile_plugins(profile)
+        if (observer := plugin.create_observer()) is not None
+    ]
+    if not observers:
+        return NoOpPipelineObserver()
+    if len(observers) == 1:
+        return observers[0]
+    return CompositePipelineObserver(observers)
+
+
+__all__ = [
+    "PipelineProfilePlugin",
+    "load_pipeline_observer",
+    "load_profile_plugin",
+    "load_profile_plugins",
+]

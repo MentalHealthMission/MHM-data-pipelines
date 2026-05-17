@@ -24,7 +24,6 @@ from ..manifest import (
     save_participant_manifest,
     write_local_manifest,
 )
-from ..provenance import finalize_run_provenance, record_published_merged_artifact
 from ..summary_manifest import save_summary_manifest, write_local_summary_manifest
 
 
@@ -77,7 +76,7 @@ class PublishStep(PipelineStep):
             )
             for file_path, s3_uri in merged_uploads:
                 metric = file_path.parent.name
-                record_published_merged_artifact(
+                context.pipeline_observer.record_published_merged_artifact(
                     context,
                     site=site,
                     participant_id=participant_id,
@@ -226,7 +225,7 @@ class PublishStep(PipelineStep):
         manifest_key = outputs.manifest_key.format(run_id=run_id, site="", participant_id="")
         upload_stats["logs"], _ = self._upload_file(context, manifest_path, manifest_key, upload_stats["logs"])
 
-        provenance_bundle_dir = finalize_run_provenance(
+        provenance_bundle_dir = context.pipeline_observer.finalize_run(
             context,
             run_manifest_path=manifest_path,
             metrics_path=metrics_path,
