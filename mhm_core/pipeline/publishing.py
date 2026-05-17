@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Set
+from typing import Dict, List, Optional, Set
 
 
 @dataclass(frozen=True)
@@ -41,15 +41,32 @@ class RunPublishArtifact:
 
 
 @dataclass(frozen=True)
+class ParticipantPublishTarget:
+    """A profile-declared participant-level output target."""
+
+    name: str
+    local_root: Path
+    destination: str
+    filter_prefix: str = ""
+    collect_keys: bool = False
+    collect_uploads: bool = False
+    include_top_level_dirs: Optional[Set[str]] = None
+    remove_after_publish: bool = False
+
+
+@dataclass(frozen=True)
 class ParticipantPublishResult:
     """Outputs uploaded for one participant during a publish step."""
 
     participant_id: str
     site: str
     merged_uploads: List[PublishedArtifact] = field(default_factory=list)
-    summary_keys: List[str] = field(default_factory=list)
-    latest_measurement_keys: List[str] = field(default_factory=list)
+    target_results: Dict[str, PublishResult] = field(default_factory=dict)
     participant_manifest_published: bool = False
+
+    def target_keys(self, target_name: str) -> List[str]:
+        result = self.target_results.get(target_name)
+        return list(result.keys) if result else []
 
 
 class PipelinePublisher:
@@ -95,6 +112,7 @@ class NoOpPipelinePublisher(PipelinePublisher):
 __all__ = [
     "NoOpPipelinePublisher",
     "ParticipantPublishResult",
+    "ParticipantPublishTarget",
     "PipelinePublisher",
     "PublishResult",
     "PublishedArtifact",

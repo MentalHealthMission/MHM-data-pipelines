@@ -265,6 +265,19 @@ raise SystemExit(1 if loaded else 0)
         self.assertEqual(selected, ["participant-1"])
         self.assertEqual(resumed, ["participant-1"])
 
+    def test_core_publish_step_has_no_project_output_assumptions(self) -> None:
+        source = Path("mhm_core/pipeline/steps/publish.py").read_text(encoding="utf-8")
+        forbidden = [
+            "summary_outputs",
+            "latest_measurement_outputs",
+            "summary_prefix",
+            "latest_measurement_output_prefix",
+            "latest_measurement_files",
+            "summary_files",
+        ]
+        offenders = [term for term in forbidden if term in source]
+        self.assertEqual([], offenders)
+
     def test_core_publish_step_uses_generic_publisher_without_connect_summary(self) -> None:
         code = r"""
 import sys
@@ -273,8 +286,13 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
-from mhm_core.pipeline.observers import NoOpPipelineObserver
-from mhm_core.pipeline.publishing import PipelinePublisher, PublishedArtifact, PublishResult
+from mhm_core.pipeline.observers import PipelineObserver
+from mhm_core.pipeline.publishing import (
+    ParticipantPublishTarget,
+    PipelinePublisher,
+    PublishedArtifact,
+    PublishResult,
+)
 from mhm_core.pipeline.steps.publish import PublishStep
 
 
@@ -323,6 +341,19 @@ class RecordingPublisher(PipelinePublisher):
     def publish_participant_manifest(self, context, *, participant_id, site, merged_local, merged_uploads, should_publish):
         self.participant_manifests.append((participant_id, site, should_publish, len(merged_uploads)))
         return should_publish
+
+
+class TargetObserver(PipelineObserver):
+    def participant_publish_targets(self, context, *, participant_id, site):
+        return [
+            ParticipantPublishTarget(
+                name="analysis",
+                local_root=context.summary_dir,
+                destination=f"memory://analysis/{site}/{participant_id}/",
+                filter_prefix=f"{participant_id}_",
+                collect_keys=True,
+            )
+        ]
 
 
 with tempfile.TemporaryDirectory() as tmp_dir:
@@ -377,12 +408,13 @@ with tempfile.TemporaryDirectory() as tmp_dir:
             debug=lambda *args, **kwargs: None,
             error=lambda *args, **kwargs: None,
         ),
-        pipeline_observer=NoOpPipelineObserver(),
+        pipeline_observer=TargetObserver(),
         pipeline_publisher=publisher,
     )
     result = PublishStep({}).run(context)
     assert result["merged_files"] == 1, result
-    assert result["summary_files"] == 1, result
+    assert result["analysis_files"] == 1, result
+    assert result["published_target_files"] == {"analysis": 1}, result
     assert publisher.participant_manifests == [(participant_id, "SiteA", True, 1)], publisher.participant_manifests
     assert any(destination == "memory://manifests/core-publish-smoke.json" for _, destination in publisher.files), publisher.files
 

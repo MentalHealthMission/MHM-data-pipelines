@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 import json
 import tarfile
 
@@ -12,12 +12,11 @@ from .base import PipelineStep, PipelineStepOperationDescriptor, PipelineStepSta
 from ..context import (
     RunContext,
     active_participants,
-    latest_measurement_outputs,
     step_state_bindings,
-    summary_outputs,
 )
 from ..publishing import (
     ParticipantPublishResult,
+    ParticipantPublishTarget,
     PipelinePublisher,
     PublishResult,
 )
@@ -34,10 +33,9 @@ class PublishStep(PipelineStep):
 
         upload_stats = {
             "merged": PublishResult(),
-            "summary": PublishResult(),
-            "latest_measurement": PublishResult(),
             "logs": PublishResult(),
         }
+        target_stats: Dict[str, PublishResult] = {}
 
         self.log(context, "Publishing outputs")
 
@@ -49,8 +47,6 @@ class PublishStep(PipelineStep):
                 context.logger.warning("[publish  ] Site unknown for participant %s; skipping", participant_id)
                 continue
 
-            summary_state = summary_outputs(context).get(participant_id)
-            latest_measurement_state = latest_measurement_outputs(context).get(participant_id)
             merged_metrics_to_publish = getattr(context, "merged_metrics_to_publish", {}).get(participant_id)
 
             merged_local = context.merged_dir / site / participant_id
@@ -82,36 +78,25 @@ class PublishStep(PipelineStep):
                 merged_local=merged_local,
             )
 
-            summary_local = context.summary_dir
-            summary_prefix = outputs.summary_prefix.format(run_id=run_id, site=site, participant_id=participant_id).rstrip("/")
-            summary_result = publisher.publish_tree(
+            target_results: Dict[str, PublishResult] = {}
+            for target in context.pipeline_observer.participant_publish_targets(
                 context,
-                local_root=summary_local,
-                destination=summary_prefix,
-                filter_prefix=f"{participant_id}_",
-                collect_keys=True,
-            )
-            upload_stats["summary"].merge(summary_result)
-            summary_keys = summary_result.keys
-
-            latest_measurement_prefix_template = getattr(context, "latest_measurement_output_prefix", None)
-            latest_measurement_keys: List[str] = []
-            if latest_measurement_state and latest_measurement_prefix_template:
-                latest_measurement_local = context.latest_measurement_dir
-                latest_measurement_prefix = latest_measurement_prefix_template.format(
-                    run_id=run_id,
-                    site=site,
-                    participant_id=participant_id,
-                ).rstrip("/")
-                latest_measurement_result = publisher.publish_tree(
+                participant_id=participant_id,
+                site=site,
+            ):
+                target_result = publisher.publish_tree(
                     context,
-                    local_root=latest_measurement_local,
-                    destination=latest_measurement_prefix,
-                    filter_prefix=f"{participant_id}_",
-                    collect_keys=True,
+                    local_root=target.local_root,
+                    destination=target.destination,
+                    filter_prefix=target.filter_prefix,
+                    collect_keys=target.collect_keys,
+                    collect_uploads=target.collect_uploads,
+                    include_top_level_dirs=target.include_top_level_dirs,
                 )
-                upload_stats["latest_measurement"].merge(latest_measurement_result)
-                latest_measurement_keys = latest_measurement_result.keys
+                target_results.setdefault(target.name, PublishResult()).merge(target_result)
+                target_stats.setdefault(target.name, PublishResult()).merge(target_result)
+                if target.remove_after_publish:
+                    self._cleanup_publish_target(context, target=target)
 
             participant_manifest_published = publisher.publish_participant_manifest(
                 context,
@@ -129,8 +114,7 @@ class PublishStep(PipelineStep):
                     participant_id=participant_id,
                     site=site,
                     merged_uploads=merged_result.uploads,
-                    summary_keys=summary_keys,
-                    latest_measurement_keys=latest_measurement_keys,
+                    target_results=target_results,
                     participant_manifest_published=participant_manifest_published,
                 ),
             )
@@ -189,12 +173,17 @@ class PublishStep(PipelineStep):
         if context.spec.publishing.delete_local_workspace:
             self._cleanup_local(context)
 
-        return {
+        metrics = {
             "status": "ok",
             "merged_files": upload_stats["merged"].files,
-            "summary_files": upload_stats["summary"].files,
-            "latest_measurement_files": upload_stats["latest_measurement"].files,
+            "published_target_files": {
+                name: result.files
+                for name, result in sorted(target_stats.items())
+            },
         }
+        for name, result in sorted(target_stats.items()):
+            metrics[f"{_safe_metric_name(name)}_files"] = result.files
+        return metrics
 
     def describe_produced_states(self, context: RunContext) -> list[PipelineStepStateDescriptor]:
         published_manifest_path = str(getattr(context, "published_dataset_manifest_path", "") or "").strip()
@@ -242,6 +231,23 @@ class PublishStep(PipelineStep):
     def _publisher(self, context: RunContext) -> PipelinePublisher:
         return context.pipeline_publisher
 
+    # ------------------------------------------------------------------
+    def _cleanup_publish_target(self, context: RunContext, *, target: ParticipantPublishTarget) -> None:
+        if not target.local_root.exists():
+            return
+        for file_path in target.local_root.rglob("*"):
+            if not file_path.is_file():
+                continue
+            if target.include_top_level_dirs is not None:
+                relative_parts = file_path.relative_to(target.local_root).parts
+                if not relative_parts or relative_parts[0] not in target.include_top_level_dirs:
+                    continue
+            if target.filter_prefix and not file_path.name.startswith(target.filter_prefix):
+                continue
+            try:
+                file_path.unlink()
+            except OSError as exc:  # pragma: no cover
+                context.logger.debug("[publish  ] Failed removing %s: %s", file_path, exc)
 
     # ------------------------------------------------------------------
     def _cleanup_participant_local(self, context: RunContext, site: str, participant_id: str) -> None:
@@ -263,20 +269,6 @@ class PublishStep(PipelineStep):
                 context.merged_dir / context.spec.source.prefix.strip("/") / site / participant_id,
             ]:
                 shutil.rmtree(candidate, ignore_errors=True)
-
-        if cfg.remove_local_summary_after_publish:
-            for file_path in context.summary_dir.glob(f"{participant_id}_*.json"):
-                try:
-                    file_path.unlink()
-                except OSError as exc:  # pragma: no cover
-                    context.logger.debug("[publish  ] Failed removing %s: %s", file_path, exc)
-
-        if getattr(cfg, "remove_local_latest_measurement_after_publish", True):
-            for file_path in context.latest_measurement_dir.glob(f"{participant_id}_*.json"):
-                try:
-                    file_path.unlink()
-                except OSError as exc:  # pragma: no cover
-                    context.logger.debug("[publish  ] Failed removing %s: %s", file_path, exc)
 
     # ------------------------------------------------------------------
     def _cleanup_local(self, context: RunContext) -> None:
@@ -318,6 +310,11 @@ class PublishStep(PipelineStep):
         archive_key = f"{archive_prefix}/{filename}"
         upload_result = publisher.publish_file(context, file_path=archive_path, destination=archive_key)
         return archive_key if upload_result.files else None
+
+
+def _safe_metric_name(name: str) -> str:
+    value = "".join(char if char.isalnum() else "_" for char in str(name).strip().lower())
+    return value.strip("_") or "target"
 
 
 __all__ = ["PublishStep"]

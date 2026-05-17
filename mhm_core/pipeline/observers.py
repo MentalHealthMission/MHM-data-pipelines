@@ -6,7 +6,12 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover
-    from .publishing import ParticipantPublishResult, PublishedArtifact, RunPublishArtifact
+    from .publishing import (
+        ParticipantPublishResult,
+        ParticipantPublishTarget,
+        PublishedArtifact,
+        RunPublishArtifact,
+    )
     from .steps.base import PipelineStep
 
 
@@ -64,6 +69,15 @@ class PipelineObserver:
         return True
 
     def run_publish_artifacts(self, context) -> List["RunPublishArtifact"]:
+        return []
+
+    def participant_publish_targets(
+        self,
+        context,
+        *,
+        participant_id: str,
+        site: str,
+    ) -> List["ParticipantPublishTarget"]:
         return []
 
     def finalize_run(
@@ -197,6 +211,24 @@ class CompositePipelineObserver(PipelineObserver):
         for observer in self._observers:
             artifacts.extend(observer.run_publish_artifacts(context))
         return artifacts
+
+    def participant_publish_targets(
+        self,
+        context,
+        *,
+        participant_id: str,
+        site: str,
+    ) -> List["ParticipantPublishTarget"]:
+        targets: List["ParticipantPublishTarget"] = []
+        for observer in self._observers:
+            targets.extend(
+                observer.participant_publish_targets(
+                    context,
+                    participant_id=participant_id,
+                    site=site,
+                )
+            )
+        return targets
 
     def after_participant_publish(
         self,
