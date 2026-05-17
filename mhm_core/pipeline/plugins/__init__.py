@@ -3,24 +3,57 @@
 from __future__ import annotations
 
 from importlib import import_module
-from typing import Dict, List
+from typing import Dict, List, Type
 
 from ..observers import CompositePipelineObserver, NoOpPipelineObserver, PipelineObserver
 from .base import PipelineProfilePlugin
 
-_PLUGIN_CLASS_MAP: Dict[str, str] = {
+PluginTarget = str | Type[PipelineProfilePlugin]
+
+_BUILTIN_PLUGIN_CLASS_MAP: Dict[str, PluginTarget] = {
     "base": "mhm_core.profiles.base.pipeline_plugin:BasePipelineProfile",
-    "connect": "connect_summary.profiles.connect.pipeline_plugin:ConnectPipelineProfile",
+    "ontology": "mhm_core.profiles.ontology.pipeline_plugin:OntologyPipelineProfile",
 }
+
+_PLUGIN_CLASS_MAP: Dict[str, PluginTarget] = dict(_BUILTIN_PLUGIN_CLASS_MAP)
+
+
+def register_profile_plugin(profile: str, target: PluginTarget, *, replace: bool = True) -> None:
+    """Register an application or integration profile plugin.
+
+    Generic pipeline code owns the registry mechanism, but application packages
+    own registration of their profiles. This keeps `mhm_core.pipeline` from
+    hard-coding CONNECT or other downstream applications.
+    """
+
+    profile_id = _normalize_profile(profile)
+    if not profile_id:
+        raise ValueError("profile must be non-empty")
+    if not replace and profile_id in _PLUGIN_CLASS_MAP:
+        raise ValueError(f"Pipeline profile '{profile_id}' is already registered")
+    _PLUGIN_CLASS_MAP[profile_id] = target
+
+
+def registered_profile_plugins() -> Dict[str, PluginTarget]:
+    """Return the currently registered profile plugin targets."""
+
+    return dict(_PLUGIN_CLASS_MAP)
+
+
+def _normalize_profile(profile: str | None) -> str:
+    return str(profile or "").strip().lower()
 
 
 def _load_plugin(profile: str) -> PipelineProfilePlugin:
     target = _PLUGIN_CLASS_MAP.get(profile)
     if not target:
         raise ValueError(f"Unknown pipeline profile '{profile}'")
-    module_name, _, class_name = target.partition(":")
-    module = import_module(module_name)
-    plugin_cls = getattr(module, class_name, None)
+    if isinstance(target, str):
+        module_name, _, class_name = target.partition(":")
+        module = import_module(module_name)
+        plugin_cls = getattr(module, class_name, None)
+    else:
+        plugin_cls = target
     if plugin_cls is None:
         raise ValueError(f"Invalid profile plugin target '{target}'")
     plugin = plugin_cls()
@@ -29,23 +62,23 @@ def _load_plugin(profile: str) -> PipelineProfilePlugin:
     return plugin
 
 
-def load_profile_plugins(profile: str | None) -> List[PipelineProfilePlugin]:
-    selected = str(profile or "connect").strip().lower() or "connect"
+def load_profile_plugins(profile: str | None, *, default_profile: str | None = None) -> List[PipelineProfilePlugin]:
+    selected = _normalize_profile(profile) or _normalize_profile(default_profile) or "base"
     if selected == "base":
         return [_load_plugin("base")]
     return [_load_plugin("base"), _load_plugin(selected)]
 
 
-def load_profile_plugin(profile: str | None) -> PipelineProfilePlugin:
+def load_profile_plugin(profile: str | None, *, default_profile: str | None = None) -> PipelineProfilePlugin:
     """Backward-compatible single-plugin accessor."""
-    plugins = load_profile_plugins(profile)
+    plugins = load_profile_plugins(profile, default_profile=default_profile)
     return plugins[-1]
 
 
-def load_pipeline_observer(profile: str | None) -> PipelineObserver:
+def load_pipeline_observer(profile: str | None, *, default_profile: str | None = None) -> PipelineObserver:
     observers = [
         observer
-        for plugin in load_profile_plugins(profile)
+        for plugin in load_profile_plugins(profile, default_profile=default_profile)
         if (observer := plugin.create_observer()) is not None
     ]
     if not observers:
@@ -57,7 +90,10 @@ def load_pipeline_observer(profile: str | None) -> PipelineObserver:
 
 __all__ = [
     "PipelineProfilePlugin",
+    "PluginTarget",
     "load_pipeline_observer",
     "load_profile_plugin",
     "load_profile_plugins",
+    "registered_profile_plugins",
+    "register_profile_plugin",
 ]

@@ -17,19 +17,15 @@ class BasePipelineProfile(PipelineProfilePlugin):
     profile_id = "base"
 
     def register_steps(self, registry: Dict[str, Type["PipelineStep"]]) -> None:
+        from mhm_core.pipeline.steps.base import NoOpStep
         from mhm_core.pipeline.steps.combine_features import CombineFeaturesStep
         from mhm_core.pipeline.steps.derived_features import DerivedFeaturesStep
-        from mhm_core.pipeline.steps.ontology_reason import OntologyReasonStep
-        from mhm_core.pipeline.steps.ontology_select import OntologySelectStep
-        from mhm_core.pipeline.steps.ontology_unify import OntologyUnifyStep
         from mhm_core.pipeline.steps.publish import PublishStep
 
         steps: Dict[str, Type["PipelineStep"]] = {
+            "noop": NoOpStep,
             "combine_features": CombineFeaturesStep,
             "derived_features": DerivedFeaturesStep,
-            "ontology_select": OntologySelectStep,
-            "ontology_unify": OntologyUnifyStep,
-            "ontology_reason": OntologyReasonStep,
             "publish": PublishStep,
         }
         registry.update(steps)

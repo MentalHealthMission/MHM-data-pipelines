@@ -109,14 +109,14 @@ class PipelineStep(ABC):
 
 
 class NoOpStep(PipelineStep):
-    """Placeholder step until full implementation lands."""
+    """Intentional no-op step for smoke tests and queue barriers."""
 
-    def __init__(self, name: str, options: Optional[Dict[str, Any]] = None) -> None:
-        super().__init__(name, options, suspend_checkpoint="step")
+    def __init__(self, options: Optional[Dict[str, Any]] = None) -> None:
+        super().__init__("noop", options, run_per_participant=False, suspend_checkpoint="step")
 
     def run(self, context: RunContext) -> Dict[str, Any]:
-        self.log(context, "Step not yet implemented; skipping.")
-        return {"status": "skipped"}
+        self.log(context, "No-op step completed.")
+        return {"status": "ok"}
 
 
 __all__ = [

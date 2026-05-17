@@ -20,7 +20,7 @@ from .discovery import discover_participants
 from .plugins import load_pipeline_observer
 from .queue import PRIORITY_RANK, select_next_spec
 from .refresh_plan import build_refresh_plan
-from .spec import RunSpec, load_spec, validate_spec
+from .spec import DEFAULT_PIPELINE_PROFILE, RunSpec, load_spec, validate_spec
 from .steps import build_steps
 
 LOG_FORMAT = "%(asctime)s %(levelname)-7s %(name)s | %(message)s"
@@ -28,16 +28,20 @@ SUSPEND_EXIT_CODE = 75
 SUSPEND_CHECK_INTERVAL_SECONDS = 15.0
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(
+    argv: Optional[list[str]] = None,
+    *,
+    default_pipeline_profile: str = DEFAULT_PIPELINE_PROFILE,
+) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
 
     if args.command == "validate":
-        return cmd_validate(args)
+        return cmd_validate(args, default_pipeline_profile=default_pipeline_profile)
     if args.command == "run":
-        return cmd_run(args)
+        return cmd_run(args, default_pipeline_profile=default_pipeline_profile)
     parser.print_help()
     return 1
 
@@ -61,10 +65,14 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def cmd_validate(args: argparse.Namespace) -> int:
+def cmd_validate(
+    args: argparse.Namespace,
+    *,
+    default_pipeline_profile: str = DEFAULT_PIPELINE_PROFILE,
+) -> int:
     session = boto3.session.Session()
     s3_client = session.client("s3")
-    spec = load_spec(args.spec, s3_client=s3_client)
+    spec = load_spec(args.spec, s3_client=s3_client, default_profile=default_pipeline_profile)
     _maybe_discover_participants(spec, s3_client, logger=logging.getLogger("mhm_core.pipeline.validate"))
     errors = validate_spec(spec)
     if errors:
@@ -75,9 +83,13 @@ def cmd_validate(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_run(args: argparse.Namespace) -> int:
+def cmd_run(
+    args: argparse.Namespace,
+    *,
+    default_pipeline_profile: str = DEFAULT_PIPELINE_PROFILE,
+) -> int:
     session = boto3.session.Session(profile_name=args.profile) if args.profile else boto3.session.Session()
-    spec = load_spec(args.spec, s3_client=session.client("s3"))
+    spec = load_spec(args.spec, s3_client=session.client("s3"), default_profile=default_pipeline_profile)
     _maybe_discover_participants(spec, session.client("s3"), logger=logging.getLogger("mhm_core.pipeline.discovery"))
     errors = validate_spec(spec)
     if errors:
@@ -90,7 +102,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         shutil.rmtree(run_dir, ignore_errors=True)
 
     context = create_run_context(spec, boto3_session=session, spec_locator=args.spec)
-    context.pipeline_observer = load_pipeline_observer(spec.profile)
+    context.pipeline_observer = load_pipeline_observer(spec.profile, default_profile=default_pipeline_profile)
     context.logger.info("Starting pipeline run %s", spec.run_id)
     context.participant_sites.update(getattr(spec.source, "site_map", {}))
     context.pipeline_observer.on_run_start(context)
@@ -120,7 +132,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         context.logger.info("No participants remain after resume filtering; nothing to do.")
         return 0
 
-    queue_prefix = os.environ.get("QUEUE_PREFIX", "s3://connect-uom/run-specs")
+    queue_prefix = os.environ.get("QUEUE_PREFIX", "").strip()
     last_suspend_probe = 0.0
 
     for batch_idx, batch in enumerate(batches, start=1):
@@ -151,7 +163,7 @@ def cmd_run(args: argparse.Namespace) -> int:
                     metrics=metrics,
                     pre_step_state=pre_step_state,
                 )
-            if _should_suspend(context, queue_prefix, last_suspend_probe):
+            if queue_prefix and _should_suspend(context, queue_prefix, last_suspend_probe):
                 return SUSPEND_EXIT_CODE
             last_suspend_probe = time.monotonic()
 
@@ -186,7 +198,11 @@ def cmd_run(args: argparse.Namespace) -> int:
                     "participants": list(batch),
                     "metrics": metrics,
                 }
-            if step.suspend_checkpoint in {"step", "batch"} and _should_suspend(context, queue_prefix, last_suspend_probe):
+            if (
+                queue_prefix
+                and step.suspend_checkpoint in {"step", "batch"}
+                and _should_suspend(context, queue_prefix, last_suspend_probe)
+            ):
                 return SUSPEND_EXIT_CODE
             last_suspend_probe = time.monotonic()
 

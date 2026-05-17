@@ -52,7 +52,7 @@ class RunContext:
     batch_participants: Optional[List[str]] = None
     current_participant: Optional[str] = None
     participant_manifests: Dict[str, ParticipantManifest] = field(default_factory=dict)
-    merged_base_prefix: str = "s3://connect-uom/merged-data"
+    merged_base_prefix: str = ""
     refresh_plan: Optional[RefreshPlan] = None
     summary_cache_policy: Optional[SummaryCachePolicy] = None
     summary_manifest_prefix: Optional[str] = None

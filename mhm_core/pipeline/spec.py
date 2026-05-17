@@ -12,6 +12,8 @@ import uuid
 import boto3
 import yaml
 
+DEFAULT_PIPELINE_PROFILE = "base"
+
 UUID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-"
     r"[0-9a-fA-F]{4}-"
@@ -227,10 +229,16 @@ class RunSpec:
     publishing: PublishingConfig
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> "RunSpec":
+    def from_dict(
+        cls,
+        data: Mapping[str, Any],
+        *,
+        default_profile: str = DEFAULT_PIPELINE_PROFILE,
+    ) -> "RunSpec":
+        resolved_default_profile = str(default_profile or DEFAULT_PIPELINE_PROFILE).strip() or DEFAULT_PIPELINE_PROFILE
         return cls(
             run_id=str(data.get("run_id", "")).strip(),
-            profile=str(data.get("profile", "connect")).strip() or "connect",
+            profile=str(data.get("profile", resolved_default_profile)).strip() or resolved_default_profile,
             created_by=str(data.get("created_by", "")).strip(),
             created_at=str(data.get("created_at", "")).strip(),
             priority=str(data.get("priority", "medium")).strip().lower() or "medium",
@@ -248,7 +256,12 @@ class RunSpec:
         return list(self.source.participants)
 
 
-def load_spec(path: str, *, s3_client: Optional[boto3.client] = None) -> RunSpec:
+def load_spec(
+    path: str,
+    *,
+    s3_client: Optional[boto3.client] = None,
+    default_profile: str = DEFAULT_PIPELINE_PROFILE,
+) -> RunSpec:
     """Load a specification from a local path or an S3 URI."""
 
     if path.startswith("s3://"):
@@ -264,7 +277,7 @@ def load_spec(path: str, *, s3_client: Optional[boto3.client] = None) -> RunSpec
     if not isinstance(data, MutableMapping):
         raise ValueError("Specification root must be a mapping/dictionary")
     _resolve_manifest_native_inputs(data, spec_locator=path, s3_client=s3_client)
-    return RunSpec.from_dict(data)
+    return RunSpec.from_dict(data, default_profile=default_profile)
 
 
 def validate_spec(spec: RunSpec) -> List[str]:
@@ -456,6 +469,7 @@ def _find_duplicates(values: Iterable[str]) -> set[str]:
 
 
 __all__ = [
+    "DEFAULT_PIPELINE_PROFILE",
     "RunSpec",
     "SourceConfig",
     "FiltersConfig",

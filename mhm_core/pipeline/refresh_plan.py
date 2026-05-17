@@ -10,8 +10,8 @@ import yaml
 
 from .spec import RunSpec, StepSpec
 
-SUMMARY_STEP_TYPES = ("summary", "connect.summary", "summary_v2", "connect.summary_v2")
-DOWNLOAD_STEP_TYPES = ("download", "connect.download")
+SUMMARY_STEP_TYPES = ("summary", "summary_v2")
+DOWNLOAD_STEP_TYPES = ("download",)
 
 
 @dataclass
@@ -108,13 +108,17 @@ def build_refresh_plan(spec: RunSpec) -> tuple[RefreshPlan, SummaryCachePolicy]:
 def _locate_first_step(steps: Iterable[StepSpec], step_types: Iterable[str]) -> Optional[StepSpec]:
     wanted = set(step_types)
     for step in steps:
-        if step.type in wanted:
+        if _unqualified_step_type(step.type) in wanted:
             return step
     return None
 
 
+def _unqualified_step_type(step_type: str) -> str:
+    return str(step_type or "").rsplit(".", 1)[-1]
+
+
 def _collect_summary_metrics(summary_step: StepSpec, *, run_id: str) -> set[str]:
-    if summary_step.type in {"summary_v2", "connect.summary_v2"}:
+    if _unqualified_step_type(summary_step.type) == "summary_v2":
         return _collect_summary_v2_metrics(summary_step, run_id=run_id)
 
     metrics: set[str] = set()

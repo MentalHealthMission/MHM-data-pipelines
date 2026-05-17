@@ -77,7 +77,15 @@ class ParticipantManifest:
         )
 
 
-def manifest_s3_key(site: str, participant_id: str, *, base_prefix: str = "s3://connect-uom/merged-data") -> str:
+def _require_base_prefix(base_prefix: str) -> str:
+    prefix = str(base_prefix or "").strip().rstrip("/")
+    if not prefix:
+        raise ValueError("base_prefix must be provided")
+    return prefix
+
+
+def manifest_s3_key(site: str, participant_id: str, *, base_prefix: str) -> str:
+    base_prefix = _require_base_prefix(base_prefix)
     base_prefix = base_prefix.rstrip("/")
     return f"{base_prefix}/{site}/{participant_id}/manifest.json"
 
@@ -87,7 +95,7 @@ def load_participant_manifest(
     *,
     site: str,
     participant_id: str,
-    base_prefix: str = "s3://connect-uom/merged-data",
+    base_prefix: str,
 ) -> ParticipantManifest:
     key = manifest_s3_key(site, participant_id, base_prefix=base_prefix)
     bucket, _, s3_key = key[len("s3://") :].partition("/")
@@ -112,7 +120,7 @@ def save_participant_manifest(
     manifest: ParticipantManifest,
     *,
     run_id: str,
-    base_prefix: str = "s3://connect-uom/merged-data",
+    base_prefix: str,
 ) -> None:
     manifest.updated_at = datetime.utcnow().strftime(ISO_FORMAT)
     manifest.last_run_id = run_id
