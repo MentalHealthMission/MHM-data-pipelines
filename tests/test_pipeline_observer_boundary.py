@@ -222,9 +222,12 @@ raise SystemExit(1 if loaded else 0)
     def test_refresh_plan_uses_generic_step_capabilities(self) -> None:
         from mhm_core.pipeline.capabilities import (
             CacheRefreshCapability,
+            EntitySelectionCapability,
+            ParticipantSelectionCapability,
             PipelineStepCapabilities,
             RefreshSourceCapability,
         )
+        from mhm_core.pipeline.refresh_plan import CacheRefreshPolicy
         from mhm_core.pipeline.refresh_plan import build_refresh_plan
 
         class ArbitrarySourceStep:
@@ -275,14 +278,16 @@ raise SystemExit(1 if loaded else 0)
         self.assertEqual(plan.participant_rules["participant-1"].relative_days, 10)
         self.assertEqual(plan.metric_rules["heart_rate"].mode, "full")
         self.assertEqual(plan.metric_rules["sleep"].relative_days, 14)
+        self.assertIsInstance(cache_policy, CacheRefreshPolicy)
         self.assertEqual(cache_policy.manifest_prefix, "s3://example/summary-manifests/")
         self.assertTrue(cache_policy.reuse_enabled)
+        self.assertIs(ParticipantSelectionCapability, EntitySelectionCapability)
 
-    def test_participant_selection_uses_generic_capabilities(self) -> None:
-        from mhm_core.pipeline.capabilities import ParticipantSelectionCapability
+    def test_entity_selection_uses_generic_capabilities(self) -> None:
+        from mhm_core.pipeline.capabilities import EntitySelectionCapability
         from mhm_core.pipeline.runner import (
-            _filter_completed_participants,
-            _filter_participants_for_required_source_metrics,
+            _filter_completed_entities,
+            _filter_entities_for_required_source_metrics,
         )
 
         class FakeS3:
@@ -293,7 +298,7 @@ raise SystemExit(1 if loaded else 0)
 
         context = SimpleNamespace(
             s3_client=FakeS3(),
-            participant_sites={
+            entity_groups={
                 "participant-1": "SiteA",
                 "participant-2": "SiteA",
             },
@@ -303,18 +308,18 @@ raise SystemExit(1 if loaded else 0)
                 batching=SimpleNamespace(resume_completed=True),
             ),
         )
-        capability = ParticipantSelectionCapability(
+        capability = EntitySelectionCapability(
             required_source_metrics={"sleep"},
             skip_completed_resume=True,
             label="example",
         )
 
-        selected = _filter_participants_for_required_source_metrics(
+        selected = _filter_entities_for_required_source_metrics(
             context,
             ["participant-1", "participant-2"],
             [capability],
         )
-        resumed = _filter_completed_participants(
+        resumed = _filter_completed_entities(
             context,
             selected,
             skip_completed_resume=capability.skip_completed_resume,
@@ -346,7 +351,7 @@ from types import SimpleNamespace
 
 from mhm_core.pipeline.observers import PipelineObserver
 from mhm_core.pipeline.publishing import (
-    ParticipantPublishTarget,
+    EntityPublishTarget,
     PipelinePublisher,
     PublishedArtifact,
     PublishResult,
@@ -358,7 +363,7 @@ class RecordingPublisher(PipelinePublisher):
     def __init__(self):
         self.trees = []
         self.files = []
-        self.participant_manifests = []
+        self.entity_manifests = []
 
     def publish_tree(
         self,
@@ -396,27 +401,27 @@ class RecordingPublisher(PipelinePublisher):
         self.files.append((str(file_path), destination))
         return PublishResult(files=1, bytes=file_path.stat().st_size)
 
-    def publish_participant_manifest(self, context, *, participant_id, site, merged_local, merged_uploads, should_publish):
-        self.participant_manifests.append((participant_id, site, should_publish, len(merged_uploads)))
+    def publish_entity_manifest(self, context, *, entity_id, group, output_local, published_artifacts, should_publish, target_name):
+        self.entity_manifests.append((entity_id, group, should_publish, len(published_artifacts), target_name))
         return should_publish
 
 
 class TargetObserver(PipelineObserver):
-    def participant_publish_targets(self, context, *, participant_id, site):
+    def entity_publish_targets(self, context, *, entity_id, group):
         return [
-            ParticipantPublishTarget(
+            EntityPublishTarget(
                 name="artifact",
-                local_root=context.merged_dir / site / participant_id,
-                destination=f"memory://artifacts/{site}/{participant_id}/",
+                local_root=context.merged_dir / group / entity_id,
+                destination=f"memory://artifacts/{group}/{entity_id}/",
                 collect_uploads=True,
                 publish_entity_manifest=True,
                 primary_output=True,
             ),
-            ParticipantPublishTarget(
+            EntityPublishTarget(
                 name="analysis",
                 local_root=context.summary_dir,
-                destination=f"memory://analysis/{site}/{participant_id}/",
-                filter_prefix=f"{participant_id}_",
+                destination=f"memory://analysis/{group}/{entity_id}/",
+                filter_prefix=f"{entity_id}_",
                 collect_keys=True,
             )
         ]
@@ -455,8 +460,11 @@ with tempfile.TemporaryDirectory() as tmp_dir:
         ),
         run_id="core-publish-smoke",
         start_time=datetime(2026, 5, 17, 0, 0, 0),
+        current_entity=None,
+        batch_entities=None,
         current_participant=None,
         batch_participants=None,
+        entity_groups={participant_id: "SiteA"},
         participant_sites={participant_id: "SiteA"},
         summary_outputs={},
         latest_measurement_outputs={},
@@ -481,7 +489,7 @@ with tempfile.TemporaryDirectory() as tmp_dir:
     assert result["artifact_files"] == 1, result
     assert result["analysis_files"] == 1, result
     assert result["published_target_files"] == {"analysis": 1, "artifact": 1}, result
-    assert publisher.participant_manifests == [(participant_id, "SiteA", True, 1)], publisher.participant_manifests
+    assert publisher.entity_manifests == [(participant_id, "SiteA", True, 1, "artifact")], publisher.entity_manifests
     assert any(destination == "memory://manifests/core-publish-smoke.json" for _, destination in publisher.files), publisher.files
 
 loaded = sorted(name for name in sys.modules if name.startswith("connect_summary"))
@@ -495,6 +503,64 @@ raise SystemExit(1 if loaded else 0)
             text=True,
         )
         self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+
+    def test_module_adoption_bridge_models_rapids_connect_binding(self) -> None:
+        from mhm_core.pipeline.adoption import (
+            ModuleAdoptionBridge,
+            PipelineModuleBinding,
+            PipelineModuleContract,
+        )
+
+        rapids_contract = PipelineModuleContract(
+            module_id="mhm.rapids",
+            display_name="MHM RAPIDS",
+            capabilities=("passive_feature_extraction", "feature_reduction"),
+            required_inputs=("entity_metric_tree", "entity_group_map"),
+            produced_outputs=("rapids_features", "rapids_manifest"),
+            config_keys=("provider_map", "external_engine"),
+            optional_dependencies=("rapids-engine",),
+        )
+        connect_binding = PipelineModuleBinding(
+            module_id="mhm.rapids",
+            project_id="connect",
+            profile_id="connect",
+            input_bindings={
+                "entity_metric_tree": "CONNECT raw/merged passive-data tree",
+                "entity_group_map": "CONNECT participant/site map",
+            },
+            output_bindings={
+                "rapids_features": "CONNECT run workspace RAPIDS feature outputs",
+                "rapids_manifest": "CONNECT run-level rapids_manifest.json",
+            },
+            config_bindings={
+                "provider_map": "CONNECT RAPIDS provider mapping assets",
+                "external_engine": "operator-provided external/rapids checkout",
+            },
+            asset_bindings={
+                "feature_map": "RAPIDS-to-MHM/ODIM feature map",
+            },
+            provenance_bindings=("rapids.stage", "rapids.run", "rapids.reduce"),
+        )
+
+        bridge = ModuleAdoptionBridge(rapids_contract, connect_binding)
+        self.assertEqual(bridge.validate(), [])
+
+        incomplete = ModuleAdoptionBridge(
+            rapids_contract,
+            PipelineModuleBinding(
+                module_id="mhm.rapids",
+                project_id="connect",
+                profile_id="connect",
+            ),
+        )
+        self.assertEqual(
+            incomplete.validate(),
+            [
+                "module binding missing required inputs: ['entity_group_map', 'entity_metric_tree']",
+                "module binding missing produced outputs: ['rapids_features', 'rapids_manifest']",
+                "module binding missing config keys: ['external_engine', 'provider_map']",
+            ],
+        )
 
 
 if __name__ == "__main__":

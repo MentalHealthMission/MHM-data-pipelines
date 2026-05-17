@@ -1,9 +1,13 @@
 """Pipeline orchestration utilities for the MHM core."""
 
+from .adoption import ModuleAdoptionBridge, PipelineModuleBinding, PipelineModuleContract
 from .context import RunContext, SummaryState, create_run_context
 from .spec import RunSpec, load_spec, validate_spec
 
 __all__ = [
+    "ModuleAdoptionBridge",
+    "PipelineModuleBinding",
+    "PipelineModuleContract",
     "RunContext",
     "RunSpec",
     "SummaryState",

@@ -35,10 +35,15 @@ class RefreshPlan:
 
 
 @dataclass
-class SummaryCachePolicy:
+class CacheRefreshPolicy:
+    """Resolved cache-refresh policy supplied by cache-producing steps."""
+
     manifest_prefix: Optional[str] = None
     reuse_enabled: bool = False
     refresh_rule: Optional[RefreshRule] = None
+
+
+SummaryCachePolicy = CacheRefreshPolicy
 
 
 def parse_refresh_rule(options: Optional[Mapping[str, Any]]) -> RefreshRule:
@@ -69,18 +74,18 @@ def merge_rules(current: RefreshRule, new_rule: RefreshRule) -> RefreshRule:
     return current
 
 
-def build_refresh_plan(spec: RunSpec, *, steps: Optional[Iterable[Any]] = None) -> tuple[RefreshPlan, SummaryCachePolicy]:
+def build_refresh_plan(spec: RunSpec, *, steps: Optional[Iterable[Any]] = None) -> tuple[RefreshPlan, CacheRefreshPolicy]:
     plan = RefreshPlan()
-    summary_policy = SummaryCachePolicy()
+    cache_policy = CacheRefreshPolicy()
 
     for step in steps or ():
         capabilities = step.describe_capabilities(spec)
         if capabilities.refresh_source:
             _apply_refresh_source(plan, capabilities.refresh_source)
         if capabilities.cache_refresh:
-            _apply_cache_refresh(plan, summary_policy, capabilities.cache_refresh)
+            _apply_cache_refresh(plan, cache_policy, capabilities.cache_refresh)
 
-    return plan, summary_policy
+    return plan, cache_policy
 
 
 def _apply_refresh_source(plan: RefreshPlan, capability: RefreshSourceCapability) -> None:
@@ -106,21 +111,21 @@ def _apply_refresh_source(plan: RefreshPlan, capability: RefreshSourceCapability
 
 def _apply_cache_refresh(
     plan: RefreshPlan,
-    summary_policy: SummaryCachePolicy,
+    cache_policy: CacheRefreshPolicy,
     capability: CacheRefreshCapability,
 ) -> None:
     cache_options = capability.cache_policy_options or {}
     if not isinstance(cache_options, Mapping):
         cache_options = {}
-    summary_policy.manifest_prefix = str(cache_options.get("manifest_prefix", "") or "") or None
-    summary_policy.reuse_enabled = bool(cache_options.get("reuse", False))
+    cache_policy.manifest_prefix = str(cache_options.get("manifest_prefix", "") or "") or None
+    cache_policy.reuse_enabled = bool(cache_options.get("reuse", False))
     refresh_options = cache_options.get("refresh") if isinstance(cache_options, Mapping) else None
-    summary_policy.refresh_rule = parse_refresh_rule(refresh_options if isinstance(refresh_options, Mapping) else None)
-    if summary_policy.refresh_rule.mode == "incremental":
+    cache_policy.refresh_rule = parse_refresh_rule(refresh_options if isinstance(refresh_options, Mapping) else None)
+    if cache_policy.refresh_rule.mode == "incremental":
         return
     for metric in capability.metric_names:
         existing = plan.metric_rules.get(metric, plan.default_rule)
-        plan.metric_rules[metric] = merge_rules(existing, summary_policy.refresh_rule)
+        plan.metric_rules[metric] = merge_rules(existing, cache_policy.refresh_rule)
 
 
 def _relative_days(rule: RefreshRule) -> int:
@@ -134,4 +139,4 @@ def _relative_days(rule: RefreshRule) -> int:
     return 0
 
 
-__all__ = ["RefreshPlan", "RefreshRule", "SummaryCachePolicy", "build_refresh_plan"]
+__all__ = ["CacheRefreshPolicy", "RefreshPlan", "RefreshRule", "SummaryCachePolicy", "build_refresh_plan"]

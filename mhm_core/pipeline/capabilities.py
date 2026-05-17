@@ -22,8 +22,8 @@ class CacheRefreshCapability:
 
 
 @dataclass(frozen=True)
-class ParticipantSelectionCapability:
-    """Declare participant selection requirements for a step."""
+class EntitySelectionCapability:
+    """Declare entity selection requirements for a step."""
 
     required_source_metrics: Set[str] = field(default_factory=set)
     skip_completed_resume: bool = False
@@ -36,11 +36,22 @@ class PipelineStepCapabilities:
 
     refresh_source: Optional[RefreshSourceCapability] = None
     cache_refresh: Optional[CacheRefreshCapability] = None
-    participant_selection: Optional[ParticipantSelectionCapability] = None
+    entity_selection: Optional[EntitySelectionCapability] = None
+    participant_selection: Optional[EntitySelectionCapability] = None
+
+    def __post_init__(self) -> None:
+        if self.entity_selection is None and self.participant_selection is not None:
+            object.__setattr__(self, "entity_selection", self.participant_selection)
+        elif self.participant_selection is None and self.entity_selection is not None:
+            object.__setattr__(self, "participant_selection", self.entity_selection)
+
+
+ParticipantSelectionCapability = EntitySelectionCapability
 
 
 __all__ = [
     "CacheRefreshCapability",
+    "EntitySelectionCapability",
     "ParticipantSelectionCapability",
     "PipelineStepCapabilities",
     "RefreshSourceCapability",

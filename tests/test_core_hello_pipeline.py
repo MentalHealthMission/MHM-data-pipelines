@@ -38,16 +38,14 @@ from mhm_core.pipeline.plugins import (
     load_pipeline_publisher,
     register_profile_plugin,
 )
-from mhm_core.pipeline.runner import _build_batches, _run_step_with_timing
+from mhm_core.pipeline.runner import _build_entity_batches, _run_step_with_timing
 from mhm_core.pipeline.spec import RunSpec, validate_spec
 from mhm_core.pipeline.steps import build_steps
 
 
-class FakeSession:
+class NoClientSession:
     def client(self, service_name):
-        if service_name != "s3":
-            raise AssertionError(service_name)
-        return object()
+        raise AssertionError(f"local hello profile should not request {service_name} client")
 
 
 entities = [
@@ -101,16 +99,17 @@ if errors:
 
 with tempfile.TemporaryDirectory() as tmp_dir:
     spec.workspace.root = Path(tmp_dir)
-    context = create_run_context(spec, boto3_session=FakeSession(), spec_locator="hello://spec")
+    context = create_run_context(spec, boto3_session=NoClientSession(), spec_locator="hello://spec")
     context.pipeline_observer = load_pipeline_observer(spec.profile)
     context.pipeline_publisher = load_pipeline_publisher(spec.profile)
     context.pipeline_observer.on_run_start(context)
 
     steps = build_steps(spec)
     context.metrics = {step.name: {} for step in steps}
-    batches = _build_batches(spec, list(spec.iter_participants()), context.participant_sites)
+    batches = _build_entity_batches(spec, list(spec.iter_entities()), context.entity_groups)
 
     for batch in batches:
+        context.batch_entities = list(batch)
         context.batch_participants = list(batch)
         for entity_id in batch:
             context.current_entity = entity_id
@@ -150,6 +149,7 @@ with tempfile.TemporaryDirectory() as tmp_dir:
         "loaded_project_modules": sorted(
             name for name in sys.modules if name.startswith("connect_summary")
         ),
+        "object_store_client": type(context.s3_client).__name__,
     }
 
 if payload["loaded_project_modules"]:
@@ -166,6 +166,7 @@ print(json.dumps(payload, sort_keys=True))
         payload = json.loads(result.stdout)
 
         self.assertEqual(payload["loaded_project_modules"], [])
+        self.assertEqual(payload["object_store_client"], "NoOpObjectStoreClient")
         self.assertEqual(payload["steps"], ["hello_collect", "hello_render", "publish"])
         self.assertEqual(payload["batches"], [["document-alpha", "document-beta"]])
         self.assertEqual(payload["record_count"], 2)

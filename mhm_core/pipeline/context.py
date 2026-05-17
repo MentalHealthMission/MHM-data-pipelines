@@ -5,9 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 import logging
-from typing import Any
 
 import boto3
 
@@ -17,7 +16,7 @@ from .extensions import PipelineExtensionRegistry
 from .manifest import ParticipantManifest, load_participant_manifest
 from .observers import NoOpPipelineObserver, PipelineObserver
 from .publishing import NoOpPipelinePublisher, PipelinePublisher
-from .refresh_plan import RefreshPlan, SummaryCachePolicy
+from .refresh_plan import CacheRefreshPolicy, RefreshPlan, SummaryCachePolicy
 from .latest_measurement_manifest import LatestMeasurementManifest, load_latest_measurement_manifest
 from .summary_manifest import SummaryManifest, load_summary_manifest
 
@@ -37,6 +36,16 @@ class LatestMeasurementState:
     results: Dict[str, object]
 
 
+class NoOpObjectStoreClient:
+    """Placeholder client for local-only profiles that do not need object storage."""
+
+    def __getattr__(self, name: str):
+        raise RuntimeError(
+            "No object-store client is configured for this pipeline run; "
+            f"attempted to use client method or attribute '{name}'."
+        )
+
+
 @dataclass
 class RunContext:
     spec: RunSpec
@@ -47,7 +56,7 @@ class RunContext:
     summary_dir: Path
     latest_measurement_dir: Path
     logs_dir: Path
-    s3_client: boto3.client
+    s3_client: Any
     start_time: datetime = field(default_factory=datetime.utcnow)
     metrics: Dict[str, object] = field(default_factory=dict)
     entity_groups: Dict[str, str] = field(default_factory=dict)
@@ -59,6 +68,7 @@ class RunContext:
     participant_manifests: Dict[str, ParticipantManifest] = field(default_factory=dict)
     merged_base_prefix: str = ""
     refresh_plan: Optional[RefreshPlan] = None
+    cache_refresh_policy: Optional[CacheRefreshPolicy] = None
     summary_cache_policy: Optional[SummaryCachePolicy] = None
     summary_manifest_prefix: Optional[str] = None
     summary_manifests: Dict[str, SummaryManifest] = field(default_factory=dict)
@@ -107,10 +117,15 @@ def create_run_context(
     spec: RunSpec,
     *,
     boto3_session: Optional[boto3.session.Session] = None,
+    s3_client: Any = None,
     spec_locator: str = "",
 ) -> RunContext:
-    session = boto3_session or boto3.session.Session()
-    s3_client = session.client("s3")
+    if s3_client is None:
+        if spec_needs_s3_client(spec):
+            session = boto3_session or boto3.session.Session()
+            s3_client = session.client("s3")
+        else:
+            s3_client = NoOpObjectStoreClient()
 
     run_dir = spec.workspace.resolve_run_path(spec.run_id)
     raw_dir = run_dir / "raw"
@@ -159,6 +174,28 @@ def create_run_context(
         context.logger.info("[spec] Discovered %d participants via discover_all", len(participants))
 
     return context
+
+
+def spec_needs_s3_client(spec: RunSpec) -> bool:
+    """Return whether a spec requires an S3-like client during context setup."""
+
+    if spec.source.discover_all and not spec.source.entities:
+        return True
+    if spec.source.bucket:
+        return True
+    if str(getattr(spec.source, "source_state_manifest", "")).strip().startswith("s3://"):
+        return True
+    outputs = spec.outputs
+    return any(
+        str(value or "").strip().startswith("s3://")
+        for value in (
+            outputs.merged_prefix,
+            outputs.summary_prefix,
+            outputs.manifest_key,
+            outputs.logs_prefix,
+            outputs.archive_prefix,
+        )
+    )
 
 
 def resolve_output_base_prefix(template: str, *, run_id: str) -> str:
@@ -338,6 +375,7 @@ def active_entities(context: RunContext) -> List[str]:
 
 
 __all__ = [
+    "NoOpObjectStoreClient",
     "RunContext",
     "SummaryState",
     "LatestMeasurementState",
@@ -354,6 +392,7 @@ __all__ = [
     "resolve_output_base_prefix",
     "resolve_output_prefix",
     "set_entity_groups",
+    "spec_needs_s3_client",
     "step_state_bindings",
     "summary_outputs",
 ]
