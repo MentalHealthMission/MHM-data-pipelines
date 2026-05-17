@@ -13,6 +13,7 @@ import boto3
 
 from .spec import RunSpec
 from .discovery import discover_participants
+from .extensions import PipelineExtensionRegistry
 from .manifest import ParticipantManifest, load_participant_manifest
 from .observers import NoOpPipelineObserver, PipelineObserver
 from .refresh_plan import RefreshPlan, SummaryCachePolicy
@@ -62,6 +63,7 @@ class RunContext:
     latest_measurement_output_prefix: Optional[str] = None
     latest_measurement_manifests: Dict[str, LatestMeasurementManifest] = field(default_factory=dict)
     latest_measurement_outputs: Dict[str, LatestMeasurementState] = field(default_factory=dict)
+    extensions: PipelineExtensionRegistry = field(default_factory=PipelineExtensionRegistry)
     spec_locator: str = ""
     provenance_dir: Optional[Path] = None
     pipeline_spec_manifest_path: Optional[Path] = None
@@ -76,6 +78,7 @@ class RunContext:
     def __post_init__(self) -> None:
         self.logger = logging.getLogger(f"mhm_core.pipeline.{self.run_id}")
         self.logger.setLevel(logging.INFO)
+        _bind_compat_extension_state(self)
 
     def ensure_directories(self) -> None:
         for path in (
@@ -184,6 +187,42 @@ def ensure_participant_manifest(context: RunContext, participant_id: str) -> Par
     return context.participant_manifests[participant_id]
 
 
+def extension_state(context: RunContext, namespace: str) -> Dict[str, Any]:
+    registry = getattr(context, "extensions", None)
+    if registry is None:
+        registry = PipelineExtensionRegistry()
+        setattr(context, "extensions", registry)
+    return registry.namespace(namespace)  # type: ignore[return-value]
+
+
+def summary_outputs(context: RunContext) -> Dict[str, SummaryState]:
+    return extension_state(context, "summary").setdefault("outputs", context.summary_outputs)
+
+
+def latest_measurement_outputs(context: RunContext) -> Dict[str, LatestMeasurementState]:
+    return extension_state(context, "latest_measurement").setdefault("outputs", context.latest_measurement_outputs)
+
+
+def step_state_bindings(context: RunContext) -> Dict[str, str]:
+    return extension_state(context, "provenance").setdefault("step_state_bindings", context.step_state_bindings)
+
+
+def published_merged_artifacts(context: RunContext) -> List[Dict[str, Any]]:
+    return extension_state(context, "provenance").setdefault(
+        "published_merged_artifacts",
+        context.published_merged_artifacts,
+    )
+
+
+def _bind_compat_extension_state(context: RunContext) -> None:
+    extension_state(context, "summary").setdefault("manifests", context.summary_manifests)
+    extension_state(context, "summary").setdefault("outputs", context.summary_outputs)
+    extension_state(context, "latest_measurement").setdefault("manifests", context.latest_measurement_manifests)
+    extension_state(context, "latest_measurement").setdefault("outputs", context.latest_measurement_outputs)
+    extension_state(context, "provenance").setdefault("published_merged_artifacts", context.published_merged_artifacts)
+    extension_state(context, "provenance").setdefault("step_state_bindings", context.step_state_bindings)
+
+
 def ensure_summary_manifest(context: RunContext, participant_id: str) -> SummaryManifest:
     if participant_id not in context.summary_manifests:
         site = context.participant_sites.get(participant_id)
@@ -244,6 +283,11 @@ __all__ = [
     "ensure_participant_manifest",
     "ensure_summary_manifest",
     "ensure_latest_measurement_manifest",
+    "extension_state",
+    "latest_measurement_outputs",
+    "published_merged_artifacts",
     "resolve_output_base_prefix",
     "resolve_output_prefix",
+    "step_state_bindings",
+    "summary_outputs",
 ]

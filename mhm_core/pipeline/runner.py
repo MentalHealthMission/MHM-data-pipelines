@@ -15,6 +15,7 @@ from collections import defaultdict
 import boto3
 from botocore.exceptions import ClientError
 
+from .capabilities import ParticipantSelectionCapability
 from .context import create_run_context, resolve_output_prefix
 from .discovery import discover_participants
 from .plugins import load_pipeline_observer
@@ -110,7 +111,7 @@ def cmd_run(
     steps = build_steps(spec)
     per_participant_steps = [step for step in steps if getattr(step, "run_per_participant", True)]
     run_once_steps = [step for step in steps if not getattr(step, "run_per_participant", True)]
-    refresh_plan, summary_policy = build_refresh_plan(spec)
+    refresh_plan, summary_policy = build_refresh_plan(spec, steps=steps)
     context.refresh_plan = refresh_plan
     context.summary_cache_policy = summary_policy
     if summary_policy.manifest_prefix:
@@ -121,8 +122,13 @@ def cmd_run(
     else:
         context.summary_manifest_prefix = None
     participants = list(spec.iter_participants())
-    participants = _filter_participants_for_latest_measurement_metrics(context, participants)
-    participants = _filter_completed_participants(context, participants)
+    participant_selection = _participant_selection_capabilities(spec, steps)
+    participants = _filter_participants_for_required_source_metrics(context, participants, participant_selection)
+    participants = _filter_completed_participants(
+        context,
+        participants,
+        skip_completed_resume=any(capability.skip_completed_resume for capability in participant_selection),
+    )
     spec.source.participants = list(participants)
     context.metrics = {step.name: {} for step in steps}
     batches = _build_batches(spec, participants, context.participant_sites)
@@ -282,15 +288,18 @@ def _chunk_batches(batches: list[list[str]], *, max_participants: int | None) ->
     return chunked
 
 
-def _filter_completed_participants(context, participants: list[str]) -> list[str]:
+def _filter_completed_participants(
+    context,
+    participants: list[str],
+    *,
+    skip_completed_resume: bool = False,
+) -> list[str]:
     if not getattr(context.spec.batching, "resume_completed", False):
         return participants
     if not participants:
         return participants
-    if _is_latest_measurement_only_spec(context.spec):
-        context.logger.info(
-            "[resume   ] Skipping merged-data resume filter for latest-measurement run"
-        )
+    if skip_completed_resume:
+        context.logger.info("[resume   ] Skipping merged-data resume filter for selected step capability")
         return participants
     if not context.merged_base_prefix.startswith("s3://"):
         context.logger.info("[resume   ] merged base prefix is not S3-backed; skipping resume filter")
@@ -352,39 +361,34 @@ def _filter_completed_participants(context, participants: list[str]) -> list[str
     return remaining
 
 
-def _is_latest_measurement_only_spec(spec: RunSpec) -> bool:
-    step_types = {str(step.type).strip() for step in getattr(spec.processing, "steps", [])}
-    if "latest_measurement_dates" not in step_types:
-        return False
-    data_transform_steps = {"merge", "redact", "summary", "rapids"}
-    return not bool(step_types & data_transform_steps)
+def _participant_selection_capabilities(spec: RunSpec, steps) -> list[ParticipantSelectionCapability]:
+    capabilities: list[ParticipantSelectionCapability] = []
+    for step in steps:
+        step_capabilities = step.describe_capabilities(spec)
+        if step_capabilities.participant_selection:
+            capabilities.append(step_capabilities.participant_selection)
+    return capabilities
 
 
-def _latest_measurement_metrics(spec: RunSpec) -> list[str]:
-    metrics: set[str] = set()
-    for step in getattr(spec.processing, "steps", []):
-        if str(step.type).strip() != "latest_measurement_dates":
-            continue
-        for measure in step.options.get("measures", []):
-            if not isinstance(measure, dict):
-                continue
-            metric = str(measure.get("metric", "")).strip()
-            if metric:
-                metrics.add(metric)
-    if not metrics:
-        metrics.update(getattr(spec.filters, "include_metrics", []))
-    return sorted(metrics)
-
-
-def _filter_participants_for_latest_measurement_metrics(context, participants: list[str]) -> list[str]:
+def _filter_participants_for_required_source_metrics(
+    context,
+    participants: list[str],
+    capabilities: list[ParticipantSelectionCapability],
+) -> list[str]:
     if not participants:
         return participants
-    if not _is_latest_measurement_only_spec(context.spec):
-        return participants
-
-    metrics = _latest_measurement_metrics(context.spec)
+    metrics = sorted(
+        {
+            str(metric).strip()
+            for capability in capabilities
+            for metric in capability.required_source_metrics
+            if str(metric).strip()
+        }
+    )
     if not metrics:
         return participants
+    labels = sorted({str(capability.label).strip() for capability in capabilities if str(capability.label).strip()})
+    label = ", ".join(labels) if labels else "source-metric"
 
     source_prefix = str(context.spec.source.prefix).strip().strip("/")
     kept: list[str] = []
@@ -410,15 +414,16 @@ def _filter_participants_for_latest_measurement_metrics(context, participants: l
 
     removed = len(participants) - len(kept)
     context.logger.info(
-        "[latest  ] Kept %d participants with source data for %d latest-measurement metric(s); filtered %d without those metrics",
+        "[select  ] Kept %d participants with source data for %d required %s metric(s); filtered %d without those metrics",
         len(kept),
         len(metrics),
+        label,
         removed,
     )
-    context.logger.debug("[latest  ] Checked %d source metric prefixes", checked_prefixes)
+    context.logger.debug("[select  ] Checked %d source metric prefixes", checked_prefixes)
     if unknown_site_count:
         context.logger.info(
-            "[latest  ] %d participants have unknown site mapping and were kept for normal validation",
+            "[select  ] %d participants have unknown site mapping and were kept for normal validation",
             unknown_site_count,
         )
     return kept

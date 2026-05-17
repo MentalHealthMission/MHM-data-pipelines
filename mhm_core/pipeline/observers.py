@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover
+    from .publishing import ParticipantPublishResult
     from .steps.base import PipelineStep
 
 
@@ -51,6 +52,17 @@ class PipelineObserver:
     ) -> None:
         return None
 
+    def should_publish_participant_manifest(
+        self,
+        context,
+        *,
+        participant_id: str,
+        site: str,
+        merged_uploads: List[tuple[Path, str]],
+        merged_local: Path,
+    ) -> bool:
+        return True
+
     def finalize_run(
         self,
         context,
@@ -58,6 +70,14 @@ class PipelineObserver:
         run_manifest_path: Path,
         metrics_path: Path,
     ) -> Optional[Path]:
+        return None
+
+    def after_participant_publish(
+        self,
+        context,
+        *,
+        result: "ParticipantPublishResult",
+    ) -> None:
         return None
 
 
@@ -70,6 +90,10 @@ class CompositePipelineObserver(PipelineObserver):
 
     def __init__(self, observers: Iterable[PipelineObserver]) -> None:
         self._observers: List[PipelineObserver] = list(observers)
+
+    @property
+    def observers(self) -> tuple[PipelineObserver, ...]:
+        return tuple(self._observers)
 
     def on_run_start(self, context) -> None:
         for observer in self._observers:
@@ -144,6 +168,35 @@ class CompositePipelineObserver(PipelineObserver):
             if observer_result is not None:
                 result = observer_result
         return result
+
+    def should_publish_participant_manifest(
+        self,
+        context,
+        *,
+        participant_id: str,
+        site: str,
+        merged_uploads: List[tuple[Path, str]],
+        merged_local: Path,
+    ) -> bool:
+        return all(
+            observer.should_publish_participant_manifest(
+                context,
+                participant_id=participant_id,
+                site=site,
+                merged_uploads=merged_uploads,
+                merged_local=merged_local,
+            )
+            for observer in self._observers
+        )
+
+    def after_participant_publish(
+        self,
+        context,
+        *,
+        result: "ParticipantPublishResult",
+    ) -> None:
+        for observer in self._observers:
+            observer.after_participant_publish(context, result=result)
 
 
 __all__ = [

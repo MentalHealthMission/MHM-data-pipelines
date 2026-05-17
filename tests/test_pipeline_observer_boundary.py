@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import ast
+import logging
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 
 class PipelineObserverBoundaryTests(unittest.TestCase):
@@ -142,13 +144,122 @@ raise SystemExit(1 if loaded else 0)
 
     def test_connect_profile_supplies_connect_provenance_observer(self) -> None:
         from connect_summary.pipeline.bootstrap import register_connect_pipeline_profile
+        from connect_summary.pipeline.publish_observer import ConnectPublishObserver
         from connect_summary.pipeline.provenance_observer import ConnectProvenanceObserver
-        from mhm_core.pipeline.observers import NoOpPipelineObserver
+        from mhm_core.pipeline.observers import CompositePipelineObserver, NoOpPipelineObserver
         from mhm_core.pipeline.plugins import load_pipeline_observer
 
         register_connect_pipeline_profile()
         self.assertIsInstance(load_pipeline_observer("base"), NoOpPipelineObserver)
-        self.assertIsInstance(load_pipeline_observer("connect"), ConnectProvenanceObserver)
+        observer = load_pipeline_observer("connect")
+        self.assertIsInstance(observer, CompositePipelineObserver)
+        inner = observer.observers
+        self.assertTrue(any(isinstance(item, ConnectProvenanceObserver) for item in inner))
+        self.assertTrue(any(isinstance(item, ConnectPublishObserver) for item in inner))
+
+    def test_refresh_plan_uses_generic_step_capabilities(self) -> None:
+        from mhm_core.pipeline.capabilities import (
+            CacheRefreshCapability,
+            PipelineStepCapabilities,
+            RefreshSourceCapability,
+        )
+        from mhm_core.pipeline.refresh_plan import build_refresh_plan
+
+        class ArbitrarySourceStep:
+            def describe_capabilities(self, spec) -> PipelineStepCapabilities:
+                return PipelineStepCapabilities(
+                    refresh_source=RefreshSourceCapability(
+                        refresh_options={
+                            "mode": "relative",
+                            "relative_days": 3,
+                            "per_metric": {
+                                "heart_rate": {
+                                    "mode": "full",
+                                }
+                            },
+                            "per_participant": {
+                                "participant-1": {
+                                    "mode": "relative",
+                                    "relative_days": 10,
+                                }
+                            },
+                        }
+                    )
+                )
+
+        class ArbitraryCacheStep:
+            def describe_capabilities(self, spec) -> PipelineStepCapabilities:
+                return PipelineStepCapabilities(
+                    cache_refresh=CacheRefreshCapability(
+                        cache_policy_options={
+                            "manifest_prefix": "s3://example/summary-manifests/",
+                            "reuse": True,
+                            "refresh": {
+                                "mode": "relative",
+                                "relative_days": 14,
+                            },
+                        },
+                        metric_names={"sleep", "heart_rate"},
+                    )
+                )
+
+        plan, cache_policy = build_refresh_plan(
+            object(),
+            steps=[ArbitrarySourceStep(), ArbitraryCacheStep()],
+        )
+
+        self.assertEqual(plan.default_rule.mode, "relative")
+        self.assertEqual(plan.default_rule.relative_days, 3)
+        self.assertEqual(plan.participant_rules["participant-1"].relative_days, 10)
+        self.assertEqual(plan.metric_rules["heart_rate"].mode, "full")
+        self.assertEqual(plan.metric_rules["sleep"].relative_days, 14)
+        self.assertEqual(cache_policy.manifest_prefix, "s3://example/summary-manifests/")
+        self.assertTrue(cache_policy.reuse_enabled)
+
+    def test_participant_selection_uses_generic_capabilities(self) -> None:
+        from mhm_core.pipeline.capabilities import ParticipantSelectionCapability
+        from mhm_core.pipeline.runner import (
+            _filter_completed_participants,
+            _filter_participants_for_required_source_metrics,
+        )
+
+        class FakeS3:
+            def list_objects_v2(self, *, Bucket: str, Prefix: str, MaxKeys: int = 1000):
+                if Bucket == "example-source" and Prefix == "output/SiteA/participant-1/sleep/":
+                    return {"KeyCount": 1, "Contents": [{"Key": f"{Prefix}part-000.csv.gz"}]}
+                return {"KeyCount": 0}
+
+        context = SimpleNamespace(
+            s3_client=FakeS3(),
+            participant_sites={
+                "participant-1": "SiteA",
+                "participant-2": "SiteA",
+            },
+            logger=logging.getLogger("test.participant_selection"),
+            spec=SimpleNamespace(
+                source=SimpleNamespace(bucket="example-source", prefix="output"),
+                batching=SimpleNamespace(resume_completed=True),
+            ),
+        )
+        capability = ParticipantSelectionCapability(
+            required_source_metrics={"sleep"},
+            skip_completed_resume=True,
+            label="example",
+        )
+
+        selected = _filter_participants_for_required_source_metrics(
+            context,
+            ["participant-1", "participant-2"],
+            [capability],
+        )
+        resumed = _filter_completed_participants(
+            context,
+            selected,
+            skip_completed_resume=capability.skip_completed_resume,
+        )
+
+        self.assertEqual(selected, ["participant-1"])
+        self.assertEqual(resumed, ["participant-1"])
 
 
 if __name__ == "__main__":

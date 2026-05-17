@@ -8,7 +8,9 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 import subprocess
 
+from ..capabilities import PipelineStepCapabilities
 from ..context import RunContext
+from ..spec import RunSpec
 
 
 @dataclass
@@ -85,6 +87,10 @@ class PipelineStep(ABC):
     def describe_operation(self, context: RunContext) -> PipelineStepOperationDescriptor | None:
         """Declare the semantic operation performed by this step for provenance capture."""
         return None
+
+    def describe_capabilities(self, spec: RunSpec) -> PipelineStepCapabilities:
+        """Declare optional generic capabilities used by planning layers."""
+        return PipelineStepCapabilities()
 
     def log(self, context: RunContext, message: str) -> None:
         context.logger.info("[%-9s] %s", self.name, message)

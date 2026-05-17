@@ -12,11 +12,13 @@ import tarfile
 from botocore.exceptions import ClientError
 
 from .base import PipelineStep, PipelineStepOperationDescriptor, PipelineStepStateDescriptor
-from ..context import RunContext, active_participants, ensure_participant_manifest, ensure_summary_manifest
-from ..context import ensure_latest_measurement_manifest
-from ..latest_measurement_manifest import (
-    save_latest_measurement_manifest,
-    write_local_latest_measurement_manifest,
+from ..context import (
+    RunContext,
+    active_participants,
+    ensure_participant_manifest,
+    latest_measurement_outputs,
+    step_state_bindings,
+    summary_outputs,
 )
 from ..manifest import (
     MetricWatermark,
@@ -24,7 +26,7 @@ from ..manifest import (
     save_participant_manifest,
     write_local_manifest,
 )
-from ..summary_manifest import save_summary_manifest, write_local_summary_manifest
+from ..publishing import ParticipantPublishResult
 
 
 @dataclass
@@ -60,8 +62,8 @@ class PublishStep(PipelineStep):
 
             manifest = ensure_participant_manifest(context, participant_id)
 
-            summary_state = context.summary_outputs.get(participant_id)
-            latest_measurement_state = context.latest_measurement_outputs.get(participant_id)
+            summary_state = summary_outputs(context).get(participant_id)
+            latest_measurement_state = latest_measurement_outputs(context).get(participant_id)
             merged_metrics_to_publish = getattr(context, "merged_metrics_to_publish", {}).get(participant_id)
 
             merged_local = context.merged_dir / site / participant_id
@@ -85,10 +87,12 @@ class PublishStep(PipelineStep):
                     s3_uri=s3_uri,
                 )
 
-            publish_participant_manifest = not (
-                self._is_latest_measurement_only_run(context)
-                and not merged_uploads
-                and not merged_local.exists()
+            publish_participant_manifest = context.pipeline_observer.should_publish_participant_manifest(
+                context,
+                participant_id=participant_id,
+                site=site,
+                merged_uploads=merged_uploads,
+                merged_local=merged_local,
             )
 
             summary_local = context.summary_dir
@@ -144,52 +148,17 @@ class PublishStep(PipelineStep):
                     "[publish  ] Skipping merged manifest update for latest-measurement-only run with no merged output"
                 )
 
-            if summary_state and context.summary_manifest_prefix:
-                summary_manifest = ensure_summary_manifest(context, participant_id)
-                if summary_keys:
-                    summary_manifest.summary_files = summary_keys
-                summary_manifest.source_watermarks = summary_state.source_watermarks
-                local_summary_manifest_dir = context.logs_dir / "summary_manifests"
-                local_summary_manifest_path = local_summary_manifest_dir / f"{participant_id}.json"
-                write_local_summary_manifest(summary_manifest, local_summary_manifest_path, run_id)
-                save_summary_manifest(
-                    context.s3_client,
-                    summary_manifest,
-                    run_id=run_id,
-                    manifest_prefix=context.summary_manifest_prefix,
-                )
-                context.logger.info(
-                    "[publish  ] Updated summary manifest for %s/%s at %s",
-                    site,
-                    participant_id,
-                    context.summary_manifest_prefix,
-                )
-
-            if latest_measurement_state and context.latest_measurement_manifest_prefix:
-                latest_measurement_manifest = ensure_latest_measurement_manifest(context, participant_id)
-                if latest_measurement_keys:
-                    latest_measurement_manifest.measurement_files = latest_measurement_keys
-                latest_measurement_manifest.source_watermarks = latest_measurement_state.source_watermarks
-                latest_measurement_manifest.results = latest_measurement_state.results
-                local_latest_measurement_manifest_dir = context.logs_dir / "latest_measurement_manifests"
-                local_latest_measurement_manifest_path = local_latest_measurement_manifest_dir / f"{participant_id}.json"
-                write_local_latest_measurement_manifest(
-                    latest_measurement_manifest,
-                    local_latest_measurement_manifest_path,
-                    run_id,
-                )
-                save_latest_measurement_manifest(
-                    context.s3_client,
-                    latest_measurement_manifest,
-                    run_id=run_id,
-                    manifest_prefix=context.latest_measurement_manifest_prefix,
-                )
-                context.logger.info(
-                    "[publish  ] Updated latest-measurement manifest for %s/%s at %s",
-                    site,
-                    participant_id,
-                    context.latest_measurement_manifest_prefix,
-                )
+            context.pipeline_observer.after_participant_publish(
+                context,
+                result=ParticipantPublishResult(
+                    participant_id=participant_id,
+                    site=site,
+                    merged_uploads=merged_uploads,
+                    summary_keys=summary_keys,
+                    latest_measurement_keys=latest_measurement_keys,
+                    participant_manifest_published=publish_participant_manifest,
+                ),
+            )
 
         context.logs_dir.mkdir(parents=True, exist_ok=True)
         metrics_payload = {"run_id": run_id, "started_at": context.start_time.isoformat() + "Z", "metrics": context.metrics}
@@ -275,7 +244,7 @@ class PublishStep(PipelineStep):
             return None
         merged_lineages = [
             lineage_key
-            for lineage_key in sorted(getattr(context, "step_state_bindings", {}).keys())
+            for lineage_key in sorted(step_state_bindings(context).keys())
             if lineage_key.startswith("merged:")
         ]
         return PipelineStepOperationDescriptor(
@@ -344,18 +313,6 @@ class PublishStep(PipelineStep):
             existing.bytes_merged = latest_file.stat().st_size
             existing.files_merged = sum(1 for _ in metric_dir.glob("*.csv.gz"))
             manifest.metrics[metric] = existing
-
-    # ------------------------------------------------------------------
-    @staticmethod
-    def _is_latest_measurement_only_run(context: RunContext) -> bool:
-        step_types = {
-            str(getattr(step, "type", "")).strip()
-            for step in getattr(getattr(context.spec, "processing", None), "steps", [])
-        }
-        if "latest_measurement_dates" not in step_types:
-            return False
-        data_transform_steps = {"merge", "redact", "summary", "rapids"}
-        return not bool(step_types & data_transform_steps)
 
     # ------------------------------------------------------------------
     def _upload_file(self, context: RunContext, path: Path, key: str, result: UploadResult) -> tuple[UploadResult, bool]:
