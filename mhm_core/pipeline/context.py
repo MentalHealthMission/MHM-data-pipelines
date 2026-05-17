@@ -16,6 +16,7 @@ from .discovery import discover_participants
 from .extensions import PipelineExtensionRegistry
 from .manifest import ParticipantManifest, load_participant_manifest
 from .observers import NoOpPipelineObserver, PipelineObserver
+from .publishing import NoOpPipelinePublisher, PipelinePublisher
 from .refresh_plan import RefreshPlan, SummaryCachePolicy
 from .latest_measurement_manifest import LatestMeasurementManifest, load_latest_measurement_manifest
 from .summary_manifest import SummaryManifest, load_summary_manifest
@@ -73,6 +74,7 @@ class RunContext:
     published_dataset_manifest_path: Optional[str] = None
     merged_metrics_to_publish: Dict[str, Set[str]] = field(default_factory=dict)
     pipeline_observer: PipelineObserver = field(default_factory=NoOpPipelineObserver)
+    pipeline_publisher: PipelinePublisher = field(default_factory=NoOpPipelinePublisher)
     logger: logging.Logger = field(init=False)
 
     def __post_init__(self) -> None:

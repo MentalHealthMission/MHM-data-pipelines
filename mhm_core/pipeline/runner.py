@@ -18,7 +18,7 @@ from botocore.exceptions import ClientError
 from .capabilities import ParticipantSelectionCapability
 from .context import create_run_context, resolve_output_prefix
 from .discovery import discover_participants
-from .plugins import load_pipeline_observer
+from .plugins import load_pipeline_observer, load_pipeline_publisher
 from .queue import PRIORITY_RANK, select_next_spec
 from .refresh_plan import build_refresh_plan
 from .spec import DEFAULT_PIPELINE_PROFILE, RunSpec, load_spec, validate_spec
@@ -104,6 +104,7 @@ def cmd_run(
 
     context = create_run_context(spec, boto3_session=session, spec_locator=args.spec)
     context.pipeline_observer = load_pipeline_observer(spec.profile, default_profile=default_pipeline_profile)
+    context.pipeline_publisher = load_pipeline_publisher(spec.profile, default_profile=default_pipeline_profile)
     context.logger.info("Starting pipeline run %s", spec.run_id)
     context.participant_sites.update(getattr(spec.source, "site_map", {}))
     context.pipeline_observer.on_run_start(context)

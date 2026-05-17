@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover
-    from .publishing import ParticipantPublishResult
+    from .publishing import ParticipantPublishResult, PublishedArtifact, RunPublishArtifact
     from .steps.base import PipelineStep
 
 
@@ -48,7 +48,7 @@ class PipelineObserver:
         participant_id: str,
         metric: str,
         file_path: Path,
-        s3_uri: str,
+        locator: str,
     ) -> None:
         return None
 
@@ -58,10 +58,13 @@ class PipelineObserver:
         *,
         participant_id: str,
         site: str,
-        merged_uploads: List[tuple[Path, str]],
+        merged_uploads: List["PublishedArtifact"],
         merged_local: Path,
     ) -> bool:
         return True
+
+    def run_publish_artifacts(self, context) -> List["RunPublishArtifact"]:
+        return []
 
     def finalize_run(
         self,
@@ -139,7 +142,7 @@ class CompositePipelineObserver(PipelineObserver):
         participant_id: str,
         metric: str,
         file_path: Path,
-        s3_uri: str,
+        locator: str,
     ) -> None:
         for observer in self._observers:
             observer.record_published_merged_artifact(
@@ -148,7 +151,7 @@ class CompositePipelineObserver(PipelineObserver):
                 participant_id=participant_id,
                 metric=metric,
                 file_path=file_path,
-                s3_uri=s3_uri,
+                locator=locator,
             )
 
     def finalize_run(
@@ -175,7 +178,7 @@ class CompositePipelineObserver(PipelineObserver):
         *,
         participant_id: str,
         site: str,
-        merged_uploads: List[tuple[Path, str]],
+        merged_uploads: List["PublishedArtifact"],
         merged_local: Path,
     ) -> bool:
         return all(
@@ -188,6 +191,12 @@ class CompositePipelineObserver(PipelineObserver):
             )
             for observer in self._observers
         )
+
+    def run_publish_artifacts(self, context) -> List["RunPublishArtifact"]:
+        artifacts: List["RunPublishArtifact"] = []
+        for observer in self._observers:
+            artifacts.extend(observer.run_publish_artifacts(context))
+        return artifacts
 
     def after_participant_publish(
         self,

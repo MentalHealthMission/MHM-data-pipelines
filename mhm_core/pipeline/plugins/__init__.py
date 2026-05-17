@@ -6,6 +6,7 @@ from importlib import import_module
 from typing import Dict, List, Type
 
 from ..observers import CompositePipelineObserver, NoOpPipelineObserver, PipelineObserver
+from ..publishing import NoOpPipelinePublisher, PipelinePublisher
 from .base import PipelineProfilePlugin
 
 PluginTarget = str | Type[PipelineProfilePlugin]
@@ -88,10 +89,22 @@ def load_pipeline_observer(profile: str | None, *, default_profile: str | None =
     return CompositePipelineObserver(observers)
 
 
+def load_pipeline_publisher(profile: str | None, *, default_profile: str | None = None) -> PipelinePublisher:
+    publishers = [
+        publisher
+        for plugin in load_profile_plugins(profile, default_profile=default_profile)
+        if (publisher := plugin.create_publisher()) is not None
+    ]
+    if not publishers:
+        return NoOpPipelinePublisher()
+    return publishers[-1]
+
+
 __all__ = [
     "PipelineProfilePlugin",
     "PluginTarget",
     "load_pipeline_observer",
+    "load_pipeline_publisher",
     "load_profile_plugin",
     "load_profile_plugins",
     "registered_profile_plugins",

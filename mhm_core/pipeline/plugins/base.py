@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Dict, Type
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..observers import PipelineObserver
+    from ..publishing import PipelinePublisher
     from ..steps.base import PipelineStep
 
 
@@ -21,4 +22,8 @@ class PipelineProfilePlugin(ABC):
 
     def create_observer(self) -> "PipelineObserver | None":
         """Return an optional observer for profile-specific side effects."""
+        return None
+
+    def create_publisher(self) -> "PipelinePublisher | None":
+        """Return an optional publisher for profile-specific output handling."""
         return None

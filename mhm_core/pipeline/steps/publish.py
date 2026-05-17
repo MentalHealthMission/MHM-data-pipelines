@@ -1,38 +1,26 @@
-"""Publish merged results, summaries, and manifest to S3."""
+"""Publish pipeline outputs through a configured publisher."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 import json
 import tarfile
 
-from botocore.exceptions import ClientError
-
 from .base import PipelineStep, PipelineStepOperationDescriptor, PipelineStepStateDescriptor
 from ..context import (
     RunContext,
     active_participants,
-    ensure_participant_manifest,
     latest_measurement_outputs,
     step_state_bindings,
     summary_outputs,
 )
-from ..manifest import (
-    MetricWatermark,
-    ParticipantManifest,
-    save_participant_manifest,
-    write_local_manifest,
+from ..publishing import (
+    ParticipantPublishResult,
+    PipelinePublisher,
+    PublishResult,
 )
-from ..publishing import ParticipantPublishResult
-
-
-@dataclass
-class UploadResult:
-    files: int = 0
-    bytes: int = 0
 
 
 class PublishStep(PipelineStep):
@@ -42,15 +30,16 @@ class PublishStep(PipelineStep):
     def run(self, context: RunContext) -> Dict[str, object]:
         outputs = context.spec.outputs
         run_id = context.run_id
+        publisher = self._publisher(context)
 
         upload_stats = {
-            "merged": UploadResult(),
-            "summary": UploadResult(),
-            "latest_measurement": UploadResult(),
-            "logs": UploadResult(),
+            "merged": PublishResult(),
+            "summary": PublishResult(),
+            "latest_measurement": PublishResult(),
+            "logs": PublishResult(),
         }
 
-        self.log(context, "Uploading outputs to S3")
+        self.log(context, "Publishing outputs")
 
         participants = active_participants(context)
 
@@ -60,51 +49,50 @@ class PublishStep(PipelineStep):
                 context.logger.warning("[publish  ] Site unknown for participant %s; skipping", participant_id)
                 continue
 
-            manifest = ensure_participant_manifest(context, participant_id)
-
             summary_state = summary_outputs(context).get(participant_id)
             latest_measurement_state = latest_measurement_outputs(context).get(participant_id)
             merged_metrics_to_publish = getattr(context, "merged_metrics_to_publish", {}).get(participant_id)
 
             merged_local = context.merged_dir / site / participant_id
             merged_prefix = outputs.merged_prefix.format(run_id=run_id, site=site, participant_id=participant_id).rstrip("/")
-            upload_stats["merged"], _, merged_uploads = self._upload_tree(
+            merged_result = publisher.publish_tree(
                 context,
-                merged_local,
-                merged_prefix,
-                upload_stats["merged"],
+                local_root=merged_local,
+                destination=merged_prefix,
                 collect_uploads=True,
                 include_top_level_dirs=merged_metrics_to_publish,
             )
-            for file_path, s3_uri in merged_uploads:
-                metric = file_path.parent.name
+            upload_stats["merged"].merge(merged_result)
+            for artifact in merged_result.uploads:
+                metric = artifact.file_path.parent.name
                 context.pipeline_observer.record_published_merged_artifact(
                     context,
                     site=site,
                     participant_id=participant_id,
                     metric=metric,
-                    file_path=file_path,
-                    s3_uri=s3_uri,
+                    file_path=artifact.file_path,
+                    locator=artifact.locator,
                 )
 
             publish_participant_manifest = context.pipeline_observer.should_publish_participant_manifest(
                 context,
                 participant_id=participant_id,
                 site=site,
-                merged_uploads=merged_uploads,
+                merged_uploads=merged_result.uploads,
                 merged_local=merged_local,
             )
 
             summary_local = context.summary_dir
             summary_prefix = outputs.summary_prefix.format(run_id=run_id, site=site, participant_id=participant_id).rstrip("/")
-            upload_stats["summary"], summary_keys, _ = self._upload_tree(
+            summary_result = publisher.publish_tree(
                 context,
-                summary_local,
-                summary_prefix,
-                upload_stats["summary"],
+                local_root=summary_local,
+                destination=summary_prefix,
                 filter_prefix=f"{participant_id}_",
                 collect_keys=True,
             )
+            upload_stats["summary"].merge(summary_result)
+            summary_keys = summary_result.keys
 
             latest_measurement_prefix_template = getattr(context, "latest_measurement_output_prefix", None)
             latest_measurement_keys: List[str] = []
@@ -115,48 +103,35 @@ class PublishStep(PipelineStep):
                     site=site,
                     participant_id=participant_id,
                 ).rstrip("/")
-                upload_stats["latest_measurement"], latest_measurement_keys, _ = self._upload_tree(
+                latest_measurement_result = publisher.publish_tree(
                     context,
-                    latest_measurement_local,
-                    latest_measurement_prefix,
-                    upload_stats["latest_measurement"],
+                    local_root=latest_measurement_local,
+                    destination=latest_measurement_prefix,
                     filter_prefix=f"{participant_id}_",
                     collect_keys=True,
                 )
+                upload_stats["latest_measurement"].merge(latest_measurement_result)
+                latest_measurement_keys = latest_measurement_result.keys
 
-            self._refresh_manifest_metrics(manifest, merged_local)
+            participant_manifest_published = publisher.publish_participant_manifest(
+                context,
+                participant_id=participant_id,
+                site=site,
+                merged_local=merged_local,
+                merged_uploads=merged_result.uploads,
+                should_publish=publish_participant_manifest,
+            )
             self._cleanup_participant_local(context, site, participant_id)
-
-            if publish_participant_manifest:
-                local_manifest_dir = context.logs_dir / "participant_manifests"
-                local_manifest_path = local_manifest_dir / f"{participant_id}.json"
-                write_local_manifest(manifest, local_manifest_path, run_id)
-                save_participant_manifest(
-                    context.s3_client,
-                    manifest,
-                    run_id=run_id,
-                    base_prefix=context.merged_base_prefix,
-                )
-                context.logger.info(
-                    "[publish  ] Updated manifest for %s/%s at %s",
-                    site,
-                    participant_id,
-                    context.merged_base_prefix,
-                )
-            else:
-                context.logger.info(
-                    "[publish  ] Skipping merged manifest update for latest-measurement-only run with no merged output"
-                )
 
             context.pipeline_observer.after_participant_publish(
                 context,
                 result=ParticipantPublishResult(
                     participant_id=participant_id,
                     site=site,
-                    merged_uploads=merged_uploads,
+                    merged_uploads=merged_result.uploads,
                     summary_keys=summary_keys,
                     latest_measurement_keys=latest_measurement_keys,
-                    participant_manifest_published=publish_participant_manifest,
+                    participant_manifest_published=participant_manifest_published,
                 ),
             )
 
@@ -166,16 +141,18 @@ class PublishStep(PipelineStep):
         metrics_path.write_text(json.dumps(metrics_payload, indent=2), encoding="utf-8")
         logs_prefix = outputs.logs_prefix.format(run_id=run_id, site="", participant_id="").rstrip("/")
         metrics_key = f"{logs_prefix}/metrics.json"
-        upload_stats["logs"], _ = self._upload_file(context, metrics_path, metrics_key, upload_stats["logs"])
+        upload_stats["logs"].merge(publisher.publish_file(context, file_path=metrics_path, destination=metrics_key))
 
-        rapids_manifest_path = context.logs_dir / "rapids_manifest.json"
-        if rapids_manifest_path.exists():
-            rapids_key = f"{logs_prefix}/rapids_manifest.json"
-            upload_stats["logs"], _ = self._upload_file(context, rapids_manifest_path, rapids_key, upload_stats["logs"])
+        for artifact in context.pipeline_observer.run_publish_artifacts(context):
+            if not artifact.file_path.exists() or not artifact.file_path.is_file():
+                continue
+            destination_name = artifact.destination_name or artifact.file_path.name
+            destination = f"{logs_prefix}/{destination_name}"
+            upload_stats["logs"].merge(publisher.publish_file(context, file_path=artifact.file_path, destination=destination))
 
         archive_opts = self.options.get("archive", {})
         if archive_opts.get("enabled"):
-            archive_key = self._archive_merged(context, archive_opts)
+            archive_key = self._archive_merged(context, archive_opts, publisher=publisher)
             if archive_key:
                 context.logger.info("[publish  ] Uploaded merged archive to %s", archive_key)
 
@@ -192,7 +169,7 @@ class PublishStep(PipelineStep):
         manifest_path = context.logs_dir / "manifest.json"
         manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         manifest_key = outputs.manifest_key.format(run_id=run_id, site="", participant_id="")
-        upload_stats["logs"], _ = self._upload_file(context, manifest_path, manifest_key, upload_stats["logs"])
+        upload_stats["logs"].merge(publisher.publish_file(context, file_path=manifest_path, destination=manifest_key))
 
         provenance_bundle_dir = context.pipeline_observer.finalize_run(
             context,
@@ -201,11 +178,12 @@ class PublishStep(PipelineStep):
         )
         if provenance_bundle_dir is not None and context.spec.provenance.upload_run_provenance:
             provenance_prefix = f"{logs_prefix}/provenance"
-            upload_stats["logs"], _, _ = self._upload_tree(
-                context,
-                provenance_bundle_dir.parent,
-                provenance_prefix,
-                upload_stats["logs"],
+            upload_stats["logs"].merge(
+                publisher.publish_tree(
+                    context,
+                    local_root=provenance_bundle_dir.parent,
+                    destination=provenance_prefix,
+                )
             )
 
         if context.spec.publishing.delete_local_workspace:
@@ -228,7 +206,7 @@ class PublishStep(PipelineStep):
                 existing_manifest_path=published_manifest_path,
                 title=f"Published merged output for run {context.run_id}",
                 notes=f"Bound the published run-output manifest after step {self.name}.",
-                surface="published_s3",
+                surface="published_output",
                 domain="passive-data",
                 stage="merged",
                 extra_metadata={
@@ -261,74 +239,9 @@ class PublishStep(PipelineStep):
         )
 
     # ------------------------------------------------------------------
-    def _upload_tree(
-        self,
-        context: RunContext,
-        root: Path,
-        prefix: str,
-        result: UploadResult,
-        *,
-        filter_prefix: str = "",
-        collect_keys: bool = False,
-        collect_uploads: bool = False,
-        include_top_level_dirs: Optional[set[str]] = None,
-    ) -> tuple[UploadResult, List[str], List[tuple[Path, str]]]:
-        keys: List[str] = []
-        uploads: List[tuple[Path, str]] = []
-        if not root.exists():
-            return result, keys, uploads
-        for file_path in root.rglob("*"):
-            if file_path.is_dir():
-                continue
-            if filter_prefix and not file_path.name.startswith(filter_prefix):
-                continue
-            rel = file_path.relative_to(root)
-            if include_top_level_dirs is not None:
-                if not rel.parts or rel.parts[0] not in include_top_level_dirs:
-                    continue
-            key = f"{prefix}/{rel.as_posix()}"
-            result, uploaded = self._upload_file(context, file_path, key, result)
-            if collect_keys:
-                if not key.startswith("s3://"):
-                    key = f"s3://{key}"
-                keys.append(key)
-            if collect_uploads and uploaded:
-                uploads.append((file_path, key))
-        return result, keys, uploads
+    def _publisher(self, context: RunContext) -> PipelinePublisher:
+        return context.pipeline_publisher
 
-    # ------------------------------------------------------------------
-    def _refresh_manifest_metrics(self, manifest: ParticipantManifest, merged_root: Path) -> None:
-        if not merged_root.exists():
-            return
-
-        for metric_dir in merged_root.iterdir():
-            if not metric_dir.is_dir():
-                continue
-            metric = metric_dir.name
-            files = list(metric_dir.glob("*.csv.gz"))
-            if not files:
-                continue
-            latest_file = max(files, key=lambda p: p.name)
-            existing = manifest.metrics.get(metric, MetricWatermark())
-            existing.bytes_merged = latest_file.stat().st_size
-            existing.files_merged = sum(1 for _ in metric_dir.glob("*.csv.gz"))
-            manifest.metrics[metric] = existing
-
-    # ------------------------------------------------------------------
-    def _upload_file(self, context: RunContext, path: Path, key: str, result: UploadResult) -> tuple[UploadResult, bool]:
-        s3 = context.s3_client
-        if not key.startswith("s3://"):
-            raise ValueError(f"S3 key must be an s3:// URI, got {key}")
-        _, remainder = key.split("s3://", 1)
-        bucket, _, s3_key = remainder.partition("/")
-        try:
-            s3.upload_file(str(path), bucket, s3_key)
-            result.files += 1
-            result.bytes += path.stat().st_size
-            return result, True
-        except ClientError as exc:
-            context.logger.error("[publish  ] Failed uploading %s -> s3://%s/%s: %s", path, bucket, s3_key, exc)
-        return result, False
 
     # ------------------------------------------------------------------
     def _cleanup_participant_local(self, context: RunContext, site: str, participant_id: str) -> None:
@@ -375,7 +288,13 @@ class PublishStep(PipelineStep):
             context.logger.warning("[publish  ] Failed cleaning workspace %s: %s", context.workspace_dir, exc)
 
     # ------------------------------------------------------------------
-    def _archive_merged(self, context: RunContext, archive_opts: Dict[str, object]) -> Optional[str]:
+    def _archive_merged(
+        self,
+        context: RunContext,
+        archive_opts: Dict[str, object],
+        *,
+        publisher: PipelinePublisher,
+    ) -> Optional[str]:
         """Create a tar.gz of merged outputs from this run and upload alongside logs."""
         filename = str(archive_opts.get("filename") or "merged.tar.gz")
         outputs = context.spec.outputs
@@ -397,8 +316,7 @@ class PublishStep(PipelineStep):
         if custom_prefix:
             archive_prefix = custom_prefix.format(run_id=run_id, site="", participant_id="").rstrip("/")
         archive_key = f"{archive_prefix}/{filename}"
-        upload_result = UploadResult()
-        upload_result, _ = self._upload_file(context, archive_path, archive_key, upload_result)
+        upload_result = publisher.publish_file(context, file_path=archive_path, destination=archive_key)
         return archive_key if upload_result.files else None
 
 
