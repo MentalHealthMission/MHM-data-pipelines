@@ -12,6 +12,7 @@ from .base import PipelineProfilePlugin
 PluginTarget = str | Type[PipelineProfilePlugin]
 
 _BUILTIN_PLUGIN_CLASS_MAP: Dict[str, PluginTarget] = {
+    "minimal": "mhm_core.profiles.minimal.pipeline_plugin:MinimalPipelineProfile",
     "base": "mhm_core.profiles.base.pipeline_plugin:BasePipelineProfile",
     "ontology": "mhm_core.profiles.ontology.pipeline_plugin:OntologyPipelineProfile",
 }
@@ -67,7 +68,10 @@ def load_profile_plugins(profile: str | None, *, default_profile: str | None = N
     selected = _normalize_profile(profile) or _normalize_profile(default_profile) or "base"
     if selected == "base":
         return [_load_plugin("base")]
-    return [_load_plugin("base"), _load_plugin(selected)]
+    selected_plugin = _load_plugin(selected)
+    if not getattr(selected_plugin, "include_base_profile", True):
+        return [selected_plugin]
+    return [_load_plugin("base"), selected_plugin]
 
 
 def load_profile_plugin(profile: str | None, *, default_profile: str | None = None) -> PipelineProfilePlugin:

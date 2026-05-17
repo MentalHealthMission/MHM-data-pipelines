@@ -142,6 +142,55 @@ raise SystemExit(1 if loaded else 0)
             self.assertEqual(load_core_spec(str(path)).profile, "base")
             self.assertEqual(load_connect_spec(str(path)).profile, "connect")
 
+    def test_minimal_profile_is_small_package_rehearsal_surface(self) -> None:
+        code = r"""
+import sys
+
+from mhm_core.pipeline.plugins import load_profile_plugins
+from mhm_core.pipeline.spec import RunSpec
+from mhm_core.pipeline.steps import build_step_registry, build_steps
+
+spec = RunSpec.from_dict(
+    {
+        "run_id": "minimal-profile-smoke",
+        "profile": "minimal",
+        "created_by": "tests",
+        "created_at": "2026-05-17T00:00:00Z",
+        "priority": "medium",
+        "source": {
+            "entities": ["entity-a"],
+            "groups": ["group-a"],
+            "entity_group_map": {"entity-a": "group-a"},
+        },
+        "workspace": {"root": "/tmp"},
+        "outputs": {
+            "manifest_key": "memory://manifests/{run_id}.json",
+            "logs_prefix": "memory://logs/{run_id}/",
+        },
+        "processing": {"steps": [{"type": "noop"}]},
+        "publishing": {},
+    }
+)
+plugins = load_profile_plugins(spec.profile)
+assert [plugin.profile_id for plugin in plugins] == ["minimal"], [plugin.profile_id for plugin in plugins]
+registry = build_step_registry(spec)
+assert sorted(registry) == ["minimal.noop", "minimal.publish", "noop", "publish"], sorted(registry)
+steps = build_steps(spec)
+assert [step.name for step in steps] == ["noop"], [step.name for step in steps]
+for forbidden_prefix in ("connect_summary", "pandas", "rdflib"):
+    loaded = sorted(name for name in sys.modules if name == forbidden_prefix or name.startswith(forbidden_prefix + "."))
+    if loaded:
+        print("\n".join(loaded))
+        raise SystemExit(1)
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+
     def test_core_validation_allows_neutral_entity_specs(self) -> None:
         from mhm_core.pipeline.spec import RunSpec, validate_spec
 
@@ -560,6 +609,32 @@ raise SystemExit(1 if loaded else 0)
                 "module binding missing produced outputs: ['rapids_features', 'rapids_manifest']",
                 "module binding missing config keys: ['external_engine', 'provider_map']",
             ],
+        )
+
+    def test_connect_rapids_adoption_bridge_is_valid(self) -> None:
+        from connect_summary.rapids.adoption import (
+            RAPIDS_MODULE_ID,
+            connect_rapids_bridge,
+            rapids_module_contract,
+        )
+
+        contract = rapids_module_contract()
+        self.assertEqual(contract.module_id, RAPIDS_MODULE_ID)
+        self.assertIn("passive_feature_extraction", contract.capabilities)
+        self.assertIn("entity_metric_tree", contract.required_inputs)
+        self.assertIn("external_engine", contract.config_keys)
+
+        bridge = connect_rapids_bridge(
+            rapids_dir="/opt/rapids",
+            provider_map="ontology/mappings/rapids-provider-map.yaml",
+            deployment="docker image or external checkout",
+        )
+        self.assertEqual(bridge.validate(), [])
+        self.assertEqual(bridge.binding.project_id, "connect")
+        self.assertEqual(bridge.binding.config_bindings["external_engine"], "/opt/rapids")
+        self.assertEqual(
+            bridge.binding.input_bindings["entity_group_map"],
+            "CONNECT participant/site map exposed as entity_group_map",
         )
 
 

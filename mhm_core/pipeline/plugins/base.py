@@ -15,6 +15,7 @@ class PipelineProfilePlugin(ABC):
     """Register source-specific step implementations."""
 
     profile_id: str
+    include_base_profile: bool = True
 
     @abstractmethod
     def register_steps(self, registry: Dict[str, Type["PipelineStep"]]) -> None:
