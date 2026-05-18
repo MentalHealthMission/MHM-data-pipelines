@@ -218,6 +218,115 @@ for forbidden_prefix in ("connect_summary", "pandas", "rdflib"):
 
         self.assertEqual(validate_spec(spec), [])
 
+    def test_core_batching_prefers_entity_count_with_participant_alias_compatibility(self) -> None:
+        from mhm_core.pipeline.spec import BatchingConfig, RunSpec, validate_spec
+        from mhm_core.pipeline.runner import _build_entity_batches
+
+        batching = BatchingConfig.from_dict(
+            {
+                "strategy": "participant_count",
+                "max_participants": 2,
+            }
+        )
+        self.assertEqual(batching.strategy, "entity_count")
+        self.assertEqual(batching.max_entities, 2)
+        self.assertEqual(batching.max_participants, 2)
+
+        spec = RunSpec.from_dict(
+            {
+                "run_id": "entity-count-batching",
+                "profile": "base",
+                "created_by": "tests",
+                "created_at": "2026-05-18T00:00:00Z",
+                "priority": "medium",
+                "source": {"entities": ["entity-a", "entity-b", "entity-c"]},
+                "workspace": {"root": "/tmp"},
+                "batching": {"strategy": "entity_count", "max_entities": 2},
+                "outputs": {
+                    "manifest_key": "memory://manifests/{run_id}.json",
+                    "logs_prefix": "memory://logs/{run_id}/",
+                },
+                "processing": {"steps": [{"type": "noop"}]},
+                "publishing": {},
+            }
+        )
+
+        self.assertEqual(validate_spec(spec), [])
+        self.assertEqual(
+            _build_entity_batches(spec, list(spec.iter_entities()), {}),
+            [["entity-a", "entity-b"], ["entity-c"]],
+        )
+
+    def test_manifest_native_source_loading_prefers_neutral_coverage_fields(self) -> None:
+        from mhm_core.pipeline.spec import load_spec
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            coverage_path = root / "coverage.json"
+            coverage_path.write_text(
+                """
+                {
+                  "coverage": {
+                    "group_summary": [
+                      {
+                        "group": "collection-a",
+                        "entities": ["entity-a", "entity-b"]
+                      }
+                    ]
+                  }
+                }
+                """,
+                encoding="utf-8",
+            )
+            source_manifest = root / "source_state.json"
+            source_manifest.write_text(
+                """
+                {
+                  "data_root_binding": {
+                    "locator": "s3://example-source/prefix"
+                  },
+                  "documents": {
+                    "coverage_summary": {
+                      "locator": "coverage.json"
+                    }
+                  }
+                }
+                """,
+                encoding="utf-8",
+            )
+            spec_path = root / "spec.yaml"
+            spec_path.write_text(
+                "\n".join(
+                    [
+                        "run_id: manifest-native-neutral",
+                        "profile: base",
+                        "created_by: tests",
+                        'created_at: "2026-05-18T00:00:00Z"',
+                        "priority: medium",
+                        "source:",
+                        f"  source_state_manifest: {source_manifest}",
+                        "workspace:",
+                        "  root: /tmp",
+                        "outputs:",
+                        "  manifest_key: memory://manifests/{run_id}.json",
+                        "  logs_prefix: memory://logs/{run_id}/",
+                        "processing:",
+                        "  steps:",
+                        "    - type: noop",
+                        "publishing: {}",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            spec = load_spec(str(spec_path))
+
+        self.assertEqual(spec.source.bucket, "example-source")
+        self.assertEqual(spec.source.prefix, "prefix")
+        self.assertEqual(spec.source.groups, ["collection-a"])
+        self.assertEqual(spec.source.entities, ["entity-a", "entity-b"])
+
     def test_connect_validation_keeps_uuid_and_s3_shaped_requirements(self) -> None:
         from connect_summary.pipeline.spec import validate_spec
         from mhm_core.pipeline.spec import RunSpec

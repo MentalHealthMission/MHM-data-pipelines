@@ -282,7 +282,7 @@ def _maybe_discover_participants(spec: RunSpec, s3_client, *, logger: logging.Lo
 
 def _build_entity_batches(spec: RunSpec, entities: list[str], entity_groups: dict[str, str]) -> list[list[str]]:
     strategy = getattr(spec.batching, "strategy", "none")
-    max_participants = getattr(spec.batching, "max_participants", None)
+    max_entities = getattr(spec.batching, "max_entities", getattr(spec.batching, "max_participants", None))
 
     if strategy in {"group", "site"}:
         grouped: dict[str, list[str]] = defaultdict(list)
@@ -299,12 +299,12 @@ def _build_entity_batches(spec: RunSpec, entities: list[str], entity_groups: dic
                 ordered_groups.append(group)
 
         group_batches = [sorted(grouped[group]) for group in ordered_groups if grouped.get(group)]
-        return _chunk_batches(group_batches, max_participants=max_participants)
+        return _chunk_batches(group_batches, max_entities=max_entities)
 
-    if strategy == "participant_count" and max_participants:
+    if strategy in {"entity_count", "participant_count"} and max_entities:
         return [
-            entities[idx : idx + max_participants]
-            for idx in range(0, len(entities), max_participants)
+            entities[idx : idx + max_entities]
+            for idx in range(0, len(entities), max_entities)
         ]
 
     return [entities]
@@ -314,13 +314,13 @@ def _build_batches(spec: RunSpec, participants: list[str], participant_sites: di
     return _build_entity_batches(spec, participants, participant_sites)
 
 
-def _chunk_batches(batches: list[list[str]], *, max_participants: int | None) -> list[list[str]]:
-    if not max_participants or max_participants <= 0:
+def _chunk_batches(batches: list[list[str]], *, max_entities: int | None) -> list[list[str]]:
+    if not max_entities or max_entities <= 0:
         return batches
     chunked: list[list[str]] = []
     for batch in batches:
-        for idx in range(0, len(batch), max_participants):
-            chunked.append(batch[idx : idx + max_participants])
+        for idx in range(0, len(batch), max_entities):
+            chunked.append(batch[idx : idx + max_entities])
     return chunked
 
 

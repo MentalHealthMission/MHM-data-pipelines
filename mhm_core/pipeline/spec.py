@@ -124,7 +124,7 @@ class WorkspaceConfig:
 @dataclass
 class BatchingConfig:
     strategy: str = "none"
-    max_participants: Optional[int] = None
+    max_entities: Optional[int] = None
     resume_completed: bool = False
 
     @classmethod
@@ -132,17 +132,27 @@ class BatchingConfig:
         if not data:
             return cls()
         strategy = str(data.get("strategy", "none")).strip().lower() or "none"
-        max_participants_raw = data.get("max_participants")
+        if strategy == "participant_count":
+            strategy = "entity_count"
+        max_entities_raw = data.get("max_entities", data.get("max_participants"))
         try:
-            max_participants = int(max_participants_raw) if max_participants_raw is not None else None
+            max_entities = int(max_entities_raw) if max_entities_raw is not None else None
         except (TypeError, ValueError):
-            max_participants = None
+            max_entities = None
         resume_completed = bool(data.get("resume_completed", False))
         return cls(
             strategy=strategy,
-            max_participants=max_participants,
+            max_entities=max_entities,
             resume_completed=resume_completed,
         )
+
+    @property
+    def max_participants(self) -> Optional[int]:
+        return self.max_entities
+
+    @max_participants.setter
+    def max_participants(self, value: Optional[int]) -> None:
+        self.max_entities = value
 
 
 @dataclass
@@ -360,13 +370,13 @@ def validate_spec(spec: RunSpec) -> List[str]:
         errors.append(f"metrics cannot be both included and excluded: {sorted(shared)}")
 
     batching_strategy = spec.batching.strategy
-    if batching_strategy not in {"none", "group", "site", "participant_count"}:
-        errors.append("batching.strategy must be one of: none, group, site, participant_count")
-    if batching_strategy == "participant_count":
-        if spec.batching.max_participants is None or spec.batching.max_participants <= 0:
-            errors.append("batching.max_participants must be a positive integer when batching.strategy=participant_count")
-    if spec.batching.max_participants is not None and spec.batching.max_participants <= 0:
-        errors.append("batching.max_participants must be positive when provided")
+    if batching_strategy not in {"none", "group", "site", "entity_count", "participant_count"}:
+        errors.append("batching.strategy must be one of: none, group, entity_count")
+    if batching_strategy in {"entity_count", "participant_count"}:
+        if spec.batching.max_entities is None or spec.batching.max_entities <= 0:
+            errors.append("batching.max_entities must be a positive integer when batching.strategy=entity_count")
+    if spec.batching.max_entities is not None and spec.batching.max_entities <= 0:
+        errors.append("batching.max_entities must be positive when provided")
 
     return errors
 
@@ -412,28 +422,69 @@ def _apply_source_state_manifest(
         if not source.get("prefix"):
             source["prefix"] = prefix
 
-    if not source.get("sites") or (isinstance(source.get("sites"), list) and not any(str(item).strip() for item in source.get("sites", []))):
+    if not _source_has_groups(source):
         coverage_locator = _linked_document_locator(manifest, "coverage_summary", base_locator=manifest_locator)
         if coverage_locator:
             coverage = _load_json_document(coverage_locator, base_locator=manifest_locator, s3_client=s3_client)
-            sites = []
-            for row in coverage.get("coverage", {}).get("site_summary", []):
-                site = str(row.get("site", "")).strip()
-                if site:
-                    sites.append(site)
-            if sites:
-                source["sites"] = sorted(dict.fromkeys(sites))
+            groups = [group for group, _entities in _coverage_group_rows(coverage)]
+            if groups:
+                source["groups"] = sorted(dict.fromkeys(groups))
 
-    participants = source.get("participants")
-    if (not participants) and not bool(source.get("discover_all", False)):
+    if (not _source_has_entities(source)) and not bool(source.get("discover_all", False)):
         coverage_locator = _linked_document_locator(manifest, "coverage_summary", base_locator=manifest_locator)
         if coverage_locator:
             coverage = _load_json_document(coverage_locator, base_locator=manifest_locator, s3_client=s3_client)
-            participant_ids: list[str] = []
-            for row in coverage.get("coverage", {}).get("site_summary", []):
-                participant_ids.extend(str(item).strip() for item in row.get("participants", []) if str(item).strip())
-            if participant_ids:
-                source["participants"] = sorted(dict.fromkeys(participant_ids))
+            entity_ids: list[str] = []
+            for _group, row_entities in _coverage_group_rows(coverage):
+                entity_ids.extend(row_entities)
+            if entity_ids:
+                source["entities"] = sorted(dict.fromkeys(entity_ids))
+
+
+def _source_has_groups(source: Mapping[str, Any]) -> bool:
+    for key in ("groups", "sites"):
+        value = source.get(key)
+        if isinstance(value, list) and any(str(item).strip() for item in value):
+            return True
+    return False
+
+
+def _source_has_entities(source: Mapping[str, Any]) -> bool:
+    for key in ("entities", "participants"):
+        value = source.get(key)
+        if isinstance(value, list) and any(str(item).strip() for item in value):
+            return True
+    return False
+
+
+def _coverage_group_rows(coverage: Mapping[str, Any]) -> list[tuple[str, list[str]]]:
+    coverage_payload = coverage.get("coverage", coverage)
+    if not isinstance(coverage_payload, Mapping):
+        return []
+    group_rows = coverage_payload.get("group_summary", [])
+    if isinstance(group_rows, list) and group_rows:
+        rows: list[tuple[str, list[str]]] = []
+        for row in group_rows:
+            if not isinstance(row, Mapping):
+                continue
+            group = str(row.get("group", row.get("site", ""))).strip()
+            raw_entities = row.get("entities", row.get("participants", []))
+            entities = [str(item).strip() for item in raw_entities if str(item).strip()]
+            if group:
+                rows.append((group, entities))
+        return rows
+
+    site_rows = coverage_payload.get("site_summary", [])
+    rows = []
+    for row in site_rows if isinstance(site_rows, list) else []:
+        if not isinstance(row, Mapping):
+            continue
+        site = str(row.get("site", "")).strip()
+        raw_participants = row.get("participants", [])
+        participants = [str(item).strip() for item in raw_participants if str(item).strip()]
+        if site:
+            rows.append((site, participants))
+    return rows
 
 
 def _linked_document_locator(manifest: Mapping[str, Any], document_name: str, *, base_locator: str) -> str:
