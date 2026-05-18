@@ -273,6 +273,17 @@ def latest_measurement_outputs(context: RunContext) -> Dict[str, LatestMeasureme
     return extension_state(context, "latest_measurement").setdefault("outputs", context.latest_measurement_outputs)
 
 
+def summary_manifests(context: RunContext) -> Dict[str, SummaryManifest]:
+    return extension_state(context, "summary").setdefault("manifests", context.summary_manifests)
+
+
+def latest_measurement_manifests(context: RunContext) -> Dict[str, LatestMeasurementManifest]:
+    return extension_state(context, "latest_measurement").setdefault(
+        "manifests",
+        context.latest_measurement_manifests,
+    )
+
+
 def step_state_bindings(context: RunContext) -> Dict[str, str]:
     return extension_state(context, "provenance").setdefault("step_state_bindings", context.step_state_bindings)
 
@@ -293,14 +304,26 @@ def _bind_compat_extension_state(context: RunContext) -> None:
     extension_state(context, "provenance").setdefault("step_state_bindings", context.step_state_bindings)
 
 
+def cache_refresh_policy(context: RunContext) -> Optional[CacheRefreshPolicy]:
+    state_policy = extension_state(context, "cache").get("refresh_policy")
+    return state_policy or context.cache_refresh_policy or context.summary_cache_policy
+
+
+def set_cache_refresh_policy(context: RunContext, policy: CacheRefreshPolicy) -> None:
+    context.cache_refresh_policy = policy
+    context.summary_cache_policy = policy
+    extension_state(context, "cache")["refresh_policy"] = policy
+
+
 def ensure_summary_manifest(context: RunContext, participant_id: str) -> SummaryManifest:
-    if participant_id not in context.summary_manifests:
+    manifests = summary_manifests(context)
+    if participant_id not in manifests:
         site = context.participant_sites.get(participant_id)
         if not site:
             raise KeyError(f"Site unknown for participant {participant_id}; cannot load summary manifest")
         prefix = context.summary_manifest_prefix
         if not prefix:
-            context.summary_manifests[participant_id] = SummaryManifest(participant_id=participant_id, site=site)
+            manifests[participant_id] = SummaryManifest(participant_id=participant_id, site=site)
         else:
             manifest = load_summary_manifest(
                 context.s3_client,
@@ -308,18 +331,19 @@ def ensure_summary_manifest(context: RunContext, participant_id: str) -> Summary
                 participant_id=participant_id,
                 manifest_prefix=prefix,
             )
-            context.summary_manifests[participant_id] = manifest
-    return context.summary_manifests[participant_id]
+            manifests[participant_id] = manifest
+    return manifests[participant_id]
 
 
 def ensure_latest_measurement_manifest(context: RunContext, participant_id: str) -> LatestMeasurementManifest:
-    if participant_id not in context.latest_measurement_manifests:
+    manifests = latest_measurement_manifests(context)
+    if participant_id not in manifests:
         site = context.participant_sites.get(participant_id)
         if not site:
             raise KeyError(f"Site unknown for participant {participant_id}; cannot load latest-measurement manifest")
         prefix = context.latest_measurement_manifest_prefix
         if not prefix:
-            context.latest_measurement_manifests[participant_id] = LatestMeasurementManifest(
+            manifests[participant_id] = LatestMeasurementManifest(
                 participant_id=participant_id,
                 site=site,
             )
@@ -330,8 +354,8 @@ def ensure_latest_measurement_manifest(context: RunContext, participant_id: str)
                 participant_id=participant_id,
                 manifest_prefix=prefix,
             )
-            context.latest_measurement_manifests[participant_id] = manifest
-    return context.latest_measurement_manifests[participant_id]
+            manifests[participant_id] = manifest
+    return manifests[participant_id]
 
 
 def active_participants(context: RunContext) -> List[str]:
@@ -370,17 +394,21 @@ __all__ = [
     "active_entities",
     "create_run_context",
     "active_participants",
+    "cache_refresh_policy",
     "entity_group",
     "ensure_participant_manifest",
     "ensure_summary_manifest",
     "ensure_latest_measurement_manifest",
     "extension_state",
+    "latest_measurement_manifests",
     "latest_measurement_outputs",
     "published_merged_artifacts",
     "resolve_output_base_prefix",
     "resolve_output_prefix",
     "set_entity_groups",
+    "set_cache_refresh_policy",
     "spec_needs_s3_client",
     "step_state_bindings",
+    "summary_manifests",
     "summary_outputs",
 ]

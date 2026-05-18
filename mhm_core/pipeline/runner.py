@@ -13,7 +13,7 @@ from typing import Optional
 from collections import defaultdict
 
 from .capabilities import EntitySelectionCapability
-from .context import create_run_context, resolve_output_prefix, spec_needs_s3_client
+from .context import create_run_context, resolve_output_prefix, set_cache_refresh_policy, spec_needs_s3_client
 from .discovery import discover_participants
 from .object_store import client_error_code, create_boto3_session, locator_needs_object_store, split_s3_uri
 from .plugins import load_pipeline_observer, load_pipeline_publisher, validate_profile_spec
@@ -137,8 +137,7 @@ def cmd_run(
     run_once_steps = [step for step in steps if not getattr(step, "run_per_participant", True)]
     refresh_plan, cache_policy = build_refresh_plan(spec, steps=steps)
     context.refresh_plan = refresh_plan
-    context.cache_refresh_policy = cache_policy
-    context.summary_cache_policy = cache_policy
+    set_cache_refresh_policy(context, cache_policy)
     if cache_policy.manifest_prefix:
         context.summary_manifest_prefix = resolve_output_prefix(
             cache_policy.manifest_prefix,

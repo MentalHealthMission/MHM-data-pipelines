@@ -33,8 +33,22 @@ class PublishResult:
 
 
 @dataclass(frozen=True)
+class RunPublishTarget:
+    """Profile-declared run-level file publication target."""
+
+    name: str
+    file_path: Path
+    destination: str
+    required: bool = True
+
+
+@dataclass(frozen=True)
 class RunPublishArtifact:
-    """Additional run-level artifact exposed by a profile or observer."""
+    """Compatibility shape for additional run-level artifacts.
+
+    New observers should prefer `RunPublishTarget`, which makes destination
+    ownership explicit at the declaration site.
+    """
 
     file_path: Path
     destination_name: Optional[str] = None
@@ -162,4 +176,5 @@ __all__ = [
     "PublishResult",
     "PublishedArtifact",
     "RunPublishArtifact",
+    "RunPublishTarget",
 ]

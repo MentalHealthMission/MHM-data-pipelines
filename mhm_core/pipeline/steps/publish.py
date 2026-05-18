@@ -20,6 +20,7 @@ from ..publishing import (
     EntityPublishTarget,
     PipelinePublisher,
     PublishResult,
+    RunPublishTarget,
 )
 
 
@@ -118,15 +119,20 @@ class PublishStep(PipelineStep):
         metrics_path = context.logs_dir / "metrics.json"
         metrics_path.write_text(json.dumps(metrics_payload, indent=2), encoding="utf-8")
         logs_prefix = outputs.logs_prefix.format(run_id=run_id, site="", participant_id="").rstrip("/")
-        metrics_key = f"{logs_prefix}/metrics.json"
-        upload_stats["logs"].merge(publisher.publish_file(context, file_path=metrics_path, destination=metrics_key))
+        upload_stats["logs"].merge(
+            self._publish_run_target(
+                context,
+                publisher=publisher,
+                target=RunPublishTarget(
+                    name="metrics",
+                    file_path=metrics_path,
+                    destination=f"{logs_prefix}/metrics.json",
+                ),
+            )
+        )
 
-        for artifact in context.pipeline_observer.run_publish_artifacts(context):
-            if not artifact.file_path.exists() or not artifact.file_path.is_file():
-                continue
-            destination_name = artifact.destination_name or artifact.file_path.name
-            destination = f"{logs_prefix}/{destination_name}"
-            upload_stats["logs"].merge(publisher.publish_file(context, file_path=artifact.file_path, destination=destination))
+        for target in context.pipeline_observer.run_publish_targets(context, logs_prefix=logs_prefix):
+            upload_stats["logs"].merge(self._publish_run_target(context, publisher=publisher, target=target))
 
         archive_opts = self.options.get("archive", {})
         if archive_opts.get("enabled"):
@@ -152,7 +158,17 @@ class PublishStep(PipelineStep):
         manifest_path = context.logs_dir / "manifest.json"
         manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         manifest_key = outputs.manifest_key.format(run_id=run_id, site="", participant_id="")
-        upload_stats["logs"].merge(publisher.publish_file(context, file_path=manifest_path, destination=manifest_key))
+        upload_stats["logs"].merge(
+            self._publish_run_target(
+                context,
+                publisher=publisher,
+                target=RunPublishTarget(
+                    name="run_manifest",
+                    file_path=manifest_path,
+                    destination=manifest_key,
+                ),
+            )
+        )
 
         provenance_bundle_dir = context.pipeline_observer.finalize_run(
             context,
@@ -228,6 +244,21 @@ class PublishStep(PipelineStep):
     # ------------------------------------------------------------------
     def _publisher(self, context: RunContext) -> PipelinePublisher:
         return context.pipeline_publisher
+
+    # ------------------------------------------------------------------
+    def _publish_run_target(
+        self,
+        context: RunContext,
+        *,
+        publisher: PipelinePublisher,
+        target: RunPublishTarget,
+    ) -> PublishResult:
+        if not target.file_path.exists() or not target.file_path.is_file():
+            if target.required:
+                raise FileNotFoundError(f"Required run publish target missing: {target.file_path}")
+            context.logger.debug("[publish  ] Skipping absent run publish target %s", target.file_path)
+            return PublishResult()
+        return publisher.publish_file(context, file_path=target.file_path, destination=target.destination)
 
     # ------------------------------------------------------------------
     def _cleanup_publish_target(self, context: RunContext, *, target: EntityPublishTarget) -> None:

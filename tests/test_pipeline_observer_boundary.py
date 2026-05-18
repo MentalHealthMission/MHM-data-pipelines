@@ -404,6 +404,7 @@ from mhm_core.pipeline.publishing import (
     PipelinePublisher,
     PublishedArtifact,
     PublishResult,
+    RunPublishTarget,
 )
 from mhm_core.pipeline.steps.publish import PublishStep
 
@@ -456,6 +457,18 @@ class RecordingPublisher(PipelinePublisher):
 
 
 class TargetObserver(PipelineObserver):
+    def run_publish_targets(self, context, *, logs_prefix):
+        extra_path = context.logs_dir / "profile_run_artifact.json"
+        extra_path.write_text("{}", encoding="utf-8")
+        return [
+            RunPublishTarget(
+                name="profile_run_artifact",
+                file_path=extra_path,
+                destination=f"{logs_prefix.rstrip('/')}/profile_run_artifact.json",
+                required=True,
+            )
+        ]
+
     def entity_publish_targets(self, context, *, entity_id, group):
         return [
             EntityPublishTarget(
@@ -540,6 +553,7 @@ with tempfile.TemporaryDirectory() as tmp_dir:
     assert result["published_target_files"] == {"analysis": 1, "artifact": 1}, result
     assert publisher.entity_manifests == [(participant_id, "SiteA", True, 1, "artifact")], publisher.entity_manifests
     assert any(destination == "memory://manifests/core-publish-smoke.json" for _, destination in publisher.files), publisher.files
+    assert any(destination == "memory://logs/core-publish-smoke/profile_run_artifact.json" for _, destination in publisher.files), publisher.files
 
 loaded = sorted(name for name in sys.modules if name.startswith("connect_summary"))
 print("\n".join(loaded))

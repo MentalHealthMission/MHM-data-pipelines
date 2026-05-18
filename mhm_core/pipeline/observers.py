@@ -13,6 +13,7 @@ if TYPE_CHECKING:  # pragma: no cover
         ParticipantPublishTarget,
         PublishedArtifact,
         RunPublishArtifact,
+        RunPublishTarget,
     )
     from .steps.base import PipelineStep
 
@@ -110,6 +111,22 @@ class PipelineObserver:
 
     def run_publish_artifacts(self, context) -> List["RunPublishArtifact"]:
         return []
+
+    def run_publish_targets(self, context, *, logs_prefix: str) -> List["RunPublishTarget"]:
+        from .publishing import RunPublishTarget
+
+        targets: List["RunPublishTarget"] = []
+        for artifact in self.run_publish_artifacts(context):
+            destination_name = artifact.destination_name or artifact.file_path.name
+            targets.append(
+                RunPublishTarget(
+                    name=Path(destination_name).stem or "run_artifact",
+                    file_path=artifact.file_path,
+                    destination=f"{logs_prefix.rstrip('/')}/{destination_name}",
+                    required=False,
+                )
+            )
+        return targets
 
     def participant_publish_targets(
         self,
@@ -316,6 +333,12 @@ class CompositePipelineObserver(PipelineObserver):
         for observer in self._observers:
             artifacts.extend(observer.run_publish_artifacts(context))
         return artifacts
+
+    def run_publish_targets(self, context, *, logs_prefix: str) -> List["RunPublishTarget"]:
+        targets: List["RunPublishTarget"] = []
+        for observer in self._observers:
+            targets.extend(observer.run_publish_targets(context, logs_prefix=logs_prefix))
+        return targets
 
     def participant_publish_targets(
         self,
