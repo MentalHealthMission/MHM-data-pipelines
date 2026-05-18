@@ -5,12 +5,11 @@ from __future__ import annotations
 from typing import Dict, List, Tuple
 import logging
 
-import boto3
-from botocore.exceptions import ClientError
+from .object_store import client_error_code
 
 
 def discover_participants(
-    s3_client: boto3.client,
+    s3_client,
     *,
     bucket: str,
     prefix: str,
@@ -55,8 +54,8 @@ def discover_participants(
                     pid = p_path.split("/")[-1]
                     participants.append(pid)
                     site_map[pid] = site
-    except ClientError as exc:
-        code = exc.response.get("Error", {}).get("Code") if hasattr(exc, "response") else None
+    except Exception as exc:
+        code = client_error_code(exc)
         if code == "ExpiredToken":
             logger.error(
                 "AWS token expired while listing %s/%s. Refresh credentials (e.g. `aws sso login` or your MFA workflow) and rerun.",

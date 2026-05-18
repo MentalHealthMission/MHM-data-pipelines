@@ -8,12 +8,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 import logging
 
-import boto3
-
 from .spec import RunSpec
 from .discovery import discover_participants
 from .extensions import PipelineExtensionRegistry
 from .manifest import ParticipantManifest, load_participant_manifest
+from .object_store import NoOpObjectStoreClient, create_s3_client
 from .observers import NoOpPipelineObserver, PipelineObserver
 from .publishing import NoOpPipelinePublisher, PipelinePublisher
 from .refresh_plan import CacheRefreshPolicy, RefreshPlan, SummaryCachePolicy
@@ -34,16 +33,6 @@ class LatestMeasurementState:
     local_files: List[Path]
     source_watermarks: Dict[str, str]
     results: Dict[str, object]
-
-
-class NoOpObjectStoreClient:
-    """Placeholder client for local-only profiles that do not need object storage."""
-
-    def __getattr__(self, name: str):
-        raise RuntimeError(
-            "No object-store client is configured for this pipeline run; "
-            f"attempted to use client method or attribute '{name}'."
-        )
 
 
 @dataclass
@@ -116,14 +105,13 @@ class RunContext:
 def create_run_context(
     spec: RunSpec,
     *,
-    boto3_session: Optional[boto3.session.Session] = None,
+    boto3_session: Optional[Any] = None,
     s3_client: Any = None,
     spec_locator: str = "",
 ) -> RunContext:
     if s3_client is None:
         if spec_needs_s3_client(spec):
-            session = boto3_session or boto3.session.Session()
-            s3_client = session.client("s3")
+            s3_client = create_s3_client(session=boto3_session)
         else:
             s3_client = NoOpObjectStoreClient()
 

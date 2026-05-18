@@ -12,12 +12,10 @@ import time
 from typing import Optional
 from collections import defaultdict
 
-import boto3
-from botocore.exceptions import ClientError
-
 from .capabilities import EntitySelectionCapability
 from .context import create_run_context, resolve_output_prefix, spec_needs_s3_client
 from .discovery import discover_participants
+from .object_store import client_error_code, create_boto3_session, locator_needs_object_store, split_s3_uri
 from .plugins import load_pipeline_observer, load_pipeline_publisher, validate_profile_spec
 from .queue import PRIORITY_RANK, select_next_spec
 from .refresh_plan import build_refresh_plan
@@ -370,7 +368,9 @@ def _filter_completed_entities(
                     entity_id = rel.split("/", 1)[0].strip("/")
                     if entity_id in group_entities:
                         completed.add(entity_id)
-        except ClientError as exc:
+        except Exception as exc:
+            if not client_error_code(exc):
+                raise
             context.logger.warning(
                 "[resume   ] Failed listing published manifests under s3://%s/%s: %s",
                 bucket,
@@ -503,21 +503,15 @@ def _s3_prefix_has_objects(s3_client, bucket: str, prefix: str) -> bool:
 
 
 def _split_s3_uri(uri: str) -> tuple[str, str]:
-    if not uri.startswith("s3://"):
-        raise ValueError(f"Expected s3:// URI, got {uri}")
-    remainder = uri[len("s3://") :]
-    bucket, _, key = remainder.partition("/")
-    if not bucket:
-        raise ValueError(f"Missing bucket in S3 URI: {uri}")
-    return bucket, key
+    return split_s3_uri(uri)
 
 
 def _locator_needs_s3_client(locator: str) -> bool:
-    return str(locator).strip().startswith("s3://")
+    return locator_needs_object_store(locator)
 
 
-def _boto3_session(*, profile_name: str | None = None) -> boto3.session.Session:
-    return boto3.session.Session(profile_name=profile_name) if profile_name else boto3.session.Session()
+def _boto3_session(*, profile_name: str | None = None):
+    return create_boto3_session(profile_name=profile_name)
 
 
 def _should_suspend(context, queue_prefix: str, last_suspend_probe: float) -> bool:

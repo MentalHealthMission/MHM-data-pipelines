@@ -9,8 +9,9 @@ import json
 import re
 import uuid
 
-import boto3
 import yaml
+
+from .object_store import create_s3_client, locator_needs_object_store, split_s3_uri
 
 DEFAULT_PIPELINE_PROFILE = "base"
 
@@ -298,15 +299,15 @@ class RunSpec:
 def load_spec(
     path: str,
     *,
-    s3_client: Optional[boto3.client] = None,
+    s3_client: Optional[Any] = None,
     default_profile: str = DEFAULT_PIPELINE_PROFILE,
 ) -> RunSpec:
     """Load a specification from a local path or an S3 URI."""
 
-    if path.startswith("s3://"):
+    if locator_needs_object_store(path):
         if s3_client is None:
-            s3_client = boto3.client("s3")
-        bucket, key = _split_s3_uri(path)
+            s3_client = create_s3_client()
+        bucket, key = split_s3_uri(path)
         obj = s3_client.get_object(Bucket=bucket, Key=key)
         payload = obj["Body"].read()
         data = yaml.safe_load(payload)
@@ -371,11 +372,7 @@ def validate_spec(spec: RunSpec) -> List[str]:
 
 
 def _split_s3_uri(uri: str) -> tuple[str, str]:
-    _, remainder = uri.split("s3://", 1)
-    bucket, _, key = remainder.partition("/")
-    if not bucket or not key:
-        raise ValueError(f"Invalid S3 URI: {uri}")
-    return bucket, key
+    return split_s3_uri(uri)
 
 
 def _resolve_manifest_native_inputs(
@@ -456,8 +453,8 @@ def _load_json_document(locator: str, *, base_locator: str, s3_client) -> Dict[s
     resolved = _resolve_relative_locator(locator, base_locator=base_locator)
     if resolved.startswith("s3://"):
         if s3_client is None:
-            s3_client = boto3.client("s3")
-        bucket, key = _split_s3_uri(resolved)
+            s3_client = create_s3_client()
+        bucket, key = split_s3_uri(resolved)
         obj = s3_client.get_object(Bucket=bucket, Key=key)
         payload = obj["Body"].read()
         return json.loads(payload)

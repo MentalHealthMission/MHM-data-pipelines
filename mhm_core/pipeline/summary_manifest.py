@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from botocore.exceptions import ClientError
+from .object_store import is_client_error, is_missing_key_error
 
 ISO_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 
@@ -69,12 +69,9 @@ def load_summary_manifest(
         data = json.loads(payload)
         if isinstance(data, dict):
             return SummaryManifest.from_dict(participant_id, site, data)
-    except ClientError as exc:
-        error_code = exc.response.get("Error", {}).get("Code")
-        if error_code != "NoSuchKey":
+    except Exception as exc:
+        if is_client_error(exc) and not is_missing_key_error(exc):
             raise
-    except Exception:
-        pass
     return SummaryManifest(participant_id=participant_id, site=site)
 
 
