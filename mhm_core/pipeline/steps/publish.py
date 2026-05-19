@@ -156,6 +156,7 @@ class PublishStep(PipelineStep):
             ],
             "metrics": context.metrics,
         }
+        manifest = context.pipeline_observer.run_manifest_payload(context, manifest=manifest)
         manifest_path = context.logs_dir / "manifest.json"
         manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         manifest_key = _format_run_locator(outputs.manifest_key, run_id=run_id)
@@ -198,6 +199,11 @@ class PublishStep(PipelineStep):
         }
         for name, result in sorted(target_stats.items()):
             metrics[f"{_safe_metric_name(name)}_files"] = result.files
+        metrics = context.pipeline_observer.publish_step_metrics(
+            context,
+            target_stats=target_stats,
+            metrics=metrics,
+        )
         return metrics
 
     def describe_produced_states(self, context: RunContext) -> list[PipelineStepStateDescriptor]:

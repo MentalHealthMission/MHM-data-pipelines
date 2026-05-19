@@ -178,6 +178,118 @@ class PipelineParityHarnessTests(unittest.TestCase):
             self.assertFalse(strict.equivalent)
             self.assertTrue(normalized.equivalent, normalized.to_dict())
 
+    def test_provenance_refactor_mode_accepts_redundant_inventory_coordinates_and_labels(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old = root / "old" / "logs" / "provenance"
+            new = root / "new" / "logs" / "provenance"
+            old.mkdir(parents=True)
+            new.mkdir(parents=True)
+            old_record = {
+                "artifact_type": "file",
+                "artifact_hash": "old-derived-hash",
+                "logical_address": {
+                    "surface": "ec2_workspace",
+                    "domain": "passive-data",
+                    "stage": "raw",
+                    "site": "test",
+                    "participant_id": "entity-1",
+                    "stream": "steps",
+                    "artifact": "20260101_0000.csv.gz",
+                    "dataset_id": "old-dataset",
+                },
+                "logical_address_display": "ec2_workspace:passive-data:raw:test:entity-1:steps:20260101_0000.csv.gz",
+                "observed": {"fingerprint_mode": "metadata", "modified_at": "old-time", "size_bytes": 12},
+                "physical_bindings": [{"binding_type": "posix_path", "locator": "/old/root/file.csv.gz"}],
+            }
+            new_record = {
+                "artifact_type": "file",
+                "artifact_hash": "new-derived-hash",
+                "logical_address": {
+                    "surface": "ec2_workspace",
+                    "domain": "passive-data",
+                    "stage": "raw",
+                    "site": "test",
+                    "group": "test",
+                    "participant_id": "entity-1",
+                    "entity_id": "entity-1",
+                    "stream": "steps",
+                    "artifact": "20260101_0000.csv.gz",
+                    "dataset_id": "new-dataset",
+                    "coordinates": {"group": "test", "entity_id": "entity-1", "stream": "steps"},
+                    "labels": {
+                        "group": "test",
+                        "site": "test",
+                        "entity_id": "entity-1",
+                        "participant_id": "entity-1",
+                        "stream": "steps",
+                    },
+                },
+                "logical_address_display": "ec2_workspace:passive-data:raw:test:entity-1:steps:20260101_0000.csv.gz",
+                "observed": {"fingerprint_mode": "metadata", "modified_at": "new-time", "size_bytes": 12},
+                "physical_bindings": [{"binding_type": "posix_path", "locator": "/new/root/file.csv.gz"}],
+            }
+            (old / "artifact_inventory.jsonl").write_text(json.dumps(old_record) + "\n", encoding="utf-8")
+            (new / "artifact_inventory.jsonl").write_text(json.dumps(new_record) + "\n", encoding="utf-8")
+
+            strict = compare_run_directories(root / "old", root / "new")
+            normalized = compare_run_directories(
+                root / "old",
+                root / "new",
+                normalization=ParityNormalization.from_pairs(
+                    [("/old/root", "/new/root")],
+                    provenance_refactor=True,
+                ),
+            )
+
+            self.assertFalse(strict.equivalent)
+            self.assertTrue(normalized.equivalent, normalized.to_dict())
+
+    def test_provenance_refactor_mode_reports_non_redundant_inventory_labels(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old = root / "old" / "logs" / "provenance"
+            new = root / "new" / "logs" / "provenance"
+            old.mkdir(parents=True)
+            new.mkdir(parents=True)
+            base_record = {
+                "artifact_type": "file",
+                "artifact_hash": "derived-hash",
+                "logical_address": {
+                    "surface": "ec2_workspace",
+                    "domain": "passive-data",
+                    "stage": "raw",
+                    "site": "test",
+                    "participant_id": "entity-1",
+                    "stream": "steps",
+                    "artifact": "20260101_0000.csv.gz",
+                    "dataset_id": "dataset",
+                },
+                "logical_address_display": "ec2_workspace:passive-data:raw:test:entity-1:steps:20260101_0000.csv.gz",
+                "observed": {"fingerprint_mode": "metadata", "modified_at": "time", "size_bytes": 12},
+                "physical_bindings": [{"binding_type": "posix_path", "locator": "/root/file.csv.gz"}],
+            }
+            changed_record = json.loads(json.dumps(base_record))
+            changed_record["logical_address"]["labels"] = {
+                "group": "test",
+                "site": "test",
+                "entity_id": "entity-1",
+                "participant_id": "entity-1",
+                "stream": "steps",
+                "non_redundant_label": "should-not-be-normalized",
+            }
+            (old / "artifact_inventory.jsonl").write_text(json.dumps(base_record) + "\n", encoding="utf-8")
+            (new / "artifact_inventory.jsonl").write_text(json.dumps(changed_record) + "\n", encoding="utf-8")
+
+            report = compare_run_directories(
+                root / "old",
+                root / "new",
+                normalization=ParityNormalization(provenance_refactor=True),
+            )
+
+            self.assertFalse(report.equivalent)
+            self.assertEqual([item.path for item in report.changed], ["logs/provenance/artifact_inventory.jsonl"])
+
     def test_provenance_refactor_mode_still_reports_semantic_coverage_changes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

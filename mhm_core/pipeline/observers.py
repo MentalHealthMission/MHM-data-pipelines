@@ -11,6 +11,7 @@ if TYPE_CHECKING:  # pragma: no cover
         EntityPublishTarget,
         ParticipantPublishResult,
         ParticipantPublishTarget,
+        PublishResult,
         PublishedArtifact,
         RunPublishArtifact,
         RunPublishTarget,
@@ -48,6 +49,18 @@ class PipelineObserver:
         pre_step_state: object = None,
     ) -> None:
         return None
+
+    def publish_step_metrics(
+        self,
+        context,
+        *,
+        target_stats: Dict[str, "PublishResult"],
+        metrics: Dict[str, object],
+    ) -> Dict[str, object]:
+        return metrics
+
+    def run_manifest_payload(self, context, *, manifest: Dict[str, object]) -> Dict[str, object]:
+        return manifest
 
     def record_published_merged_artifact(
         self,
@@ -242,6 +255,28 @@ class CompositePipelineObserver(PipelineObserver):
                 metrics=metrics,
                 pre_step_state=observer_state,
             )
+
+    def publish_step_metrics(
+        self,
+        context,
+        *,
+        target_stats: Dict[str, "PublishResult"],
+        metrics: Dict[str, object],
+    ) -> Dict[str, object]:
+        resolved = dict(metrics)
+        for observer in self._observers:
+            resolved = observer.publish_step_metrics(
+                context,
+                target_stats=target_stats,
+                metrics=resolved,
+            )
+        return resolved
+
+    def run_manifest_payload(self, context, *, manifest: Dict[str, object]) -> Dict[str, object]:
+        resolved = dict(manifest)
+        for observer in self._observers:
+            resolved = observer.run_manifest_payload(context, manifest=resolved)
+        return resolved
 
     def record_published_merged_artifact(
         self,

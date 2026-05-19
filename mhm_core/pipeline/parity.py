@@ -294,6 +294,10 @@ def _drop_provenance_refactor_alias(
 ) -> bool:
     if not normalization.provenance_refactor:
         return False
+    if key == "coordinates":
+        return _is_redundant_coordinates(mapping.get(key), mapping)
+    if key == "labels":
+        return _is_redundant_labels(mapping.get(key), mapping)
     legacy_partner = {
         "entity_count": "participant_count",
         "group_count": "site_count",
@@ -304,6 +308,45 @@ def _drop_provenance_refactor_alias(
         "group": "site",
     }.get(key)
     return bool(legacy_partner and legacy_partner in mapping)
+
+
+def _is_redundant_coordinates(value: Any, parent: Mapping[str, Any]) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    allowed_keys = {"group", "entity_id", "stream"}
+    if set(str(key) for key in value) - allowed_keys:
+        return False
+    return all(
+        _mapping_value_matches_parent(value, key, parent)
+        for key in allowed_keys
+        if key in value
+    )
+
+
+def _is_redundant_labels(value: Any, parent: Mapping[str, Any]) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    allowed_keys = {"group", "site", "entity_id", "participant_id", "stream"}
+    if set(str(key) for key in value) - allowed_keys:
+        return False
+    return all(
+        _mapping_value_matches_parent(value, key, parent)
+        for key in allowed_keys
+        if key in value
+    )
+
+
+def _mapping_value_matches_parent(value: Mapping[str, Any], key: str, parent: Mapping[str, Any]) -> bool:
+    text_key = str(key)
+    candidate = value.get(text_key)
+    parent_keys = {
+        "group": ("group", "site"),
+        "site": ("site", "group"),
+        "entity_id": ("entity_id", "participant_id"),
+        "participant_id": ("participant_id", "entity_id"),
+        "stream": ("stream",),
+    }.get(text_key, (text_key,))
+    return any(str(candidate) == str(parent[parent_key]) for parent_key in parent_keys if parent_key in parent)
 
 
 def _normalize_provenance_derived_field(
