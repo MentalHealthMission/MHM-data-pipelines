@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -141,7 +141,7 @@ def save_entity_summary_manifest(
     run_id: str,
     manifest_prefix: str,
 ) -> None:
-    manifest.updated_at = datetime.utcnow().strftime(ISO_FORMAT)
+    manifest.updated_at = utc_now()
     manifest.last_run_id = run_id
     key = entity_summary_manifest_object_key(manifest.group, manifest.entity_id, manifest_prefix=manifest_prefix)
     bucket, _, s3_key = key[len("s3://") :].partition("/")
@@ -187,10 +187,14 @@ def save_summary_manifest(
 
 
 def write_local_summary_manifest(manifest: EntitySummaryManifest, path: Path, run_id: str) -> None:
-    manifest.updated_at = datetime.utcnow().strftime(ISO_FORMAT)
+    manifest.updated_at = utc_now()
     manifest.last_run_id = run_id
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(manifest.to_dict(), indent=2, sort_keys=True), encoding="utf-8")
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).strftime(ISO_FORMAT)
 
 
 __all__ = [

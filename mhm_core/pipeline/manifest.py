@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -171,7 +171,7 @@ def save_entity_manifest(
     run_id: str,
     base_prefix: str,
 ) -> None:
-    manifest.updated_at = datetime.utcnow().strftime(ISO_FORMAT)
+    manifest.updated_at = utc_now()
     manifest.last_run_id = run_id
     doc = json.dumps(manifest.to_dict(), indent=2, sort_keys=True)
 
@@ -217,10 +217,14 @@ def save_participant_manifest(
 
 
 def write_local_manifest(manifest: EntityManifest, path: Path, run_id: str) -> None:
-    manifest.updated_at = datetime.utcnow().strftime(ISO_FORMAT)
+    manifest.updated_at = utc_now()
     manifest.last_run_id = run_id
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(manifest.to_dict(), indent=2, sort_keys=True), encoding="utf-8")
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).strftime(ISO_FORMAT)
 
 
 __all__ = [

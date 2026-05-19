@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Optional
 import json
@@ -143,7 +143,7 @@ class PublishStep(PipelineStep):
         manifest = {
             "run_id": run_id,
             "started_at": context.start_time.isoformat() + "Z",
-            "completed_at": datetime.utcnow().isoformat() + "Z",
+            "completed_at": _utc_now_iso(),
             "entity_count": len(entity_group_map),
             "participant_count": len(entity_group_map),
             "entities": [
@@ -323,6 +323,10 @@ class PublishStep(PipelineStep):
 def _safe_metric_name(name: str) -> str:
     value = "".join(char if char.isalnum() else "_" for char in str(name).strip().lower())
     return value.strip("_") or "target"
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _format_run_locator(template: str, *, run_id: str) -> str:
