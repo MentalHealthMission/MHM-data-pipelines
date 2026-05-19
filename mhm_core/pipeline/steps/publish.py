@@ -13,7 +13,6 @@ from ..context import (
     RunContext,
     active_entities,
     entity_group,
-    step_state_bindings,
 )
 from ..publishing import (
     EntityPublishResult,
@@ -200,46 +199,16 @@ class PublishStep(PipelineStep):
         return metrics
 
     def describe_produced_states(self, context: RunContext) -> list[PipelineStepStateDescriptor]:
-        published_manifest_path = str(getattr(context, "published_dataset_manifest_path", "") or "").strip()
-        if not published_manifest_path:
+        observer = getattr(context, "pipeline_observer", None)
+        if observer is None:
             return []
-        return [
-            PipelineStepStateDescriptor(
-                lineage_key=f"published:{context.run_id}",
-                existing_manifest_path=published_manifest_path,
-                title=f"Published merged output for run {context.run_id}",
-                notes=f"Bound the published run-output manifest after step {self.name}.",
-                surface="published_output",
-                domain="passive-data",
-                stage="merged",
-                extra_metadata={
-                    "run_id": context.run_id,
-                    "step_type": getattr(self, "_step_type", self.name),
-                },
-            )
-        ]
+        return observer.publish_produced_state_descriptors(context, step_name=self.name)
 
     def describe_operation(self, context: RunContext) -> PipelineStepOperationDescriptor | None:
-        published_manifest_path = str(getattr(context, "published_dataset_manifest_path", "") or "").strip()
-        if not published_manifest_path:
+        observer = getattr(context, "pipeline_observer", None)
+        if observer is None:
             return None
-        merged_lineages = [
-            lineage_key
-            for lineage_key in sorted(step_state_bindings(context).keys())
-            if lineage_key.startswith("merged:")
-        ]
-        return PipelineStepOperationDescriptor(
-            operation_kind="publish",
-            operation_name=self.name,
-            title="Publish merged output",
-            summary="Published the merged run outputs and attached their run-local provenance.",
-            input_lineage_keys=merged_lineages,
-            output_lineage_keys=[f"published:{context.run_id}"],
-            extra_metadata={
-                "run_id": context.run_id,
-                "merged_input_count": len(merged_lineages),
-            },
-        )
+        return observer.publish_operation_descriptor(context, step_name=self.name)
 
     # ------------------------------------------------------------------
     def _publisher(self, context: RunContext) -> PipelinePublisher:

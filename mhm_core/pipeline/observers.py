@@ -16,6 +16,7 @@ if TYPE_CHECKING:  # pragma: no cover
         RunPublishTarget,
     )
     from .steps.base import PipelineStep
+    from .steps.base import PipelineStepOperationDescriptor, PipelineStepStateDescriptor
 
 
 class PipelineObserver:
@@ -157,6 +158,22 @@ class PipelineObserver:
         run_manifest_path: Path,
         metrics_path: Path,
     ) -> Optional[Path]:
+        return None
+
+    def publish_produced_state_descriptors(
+        self,
+        context,
+        *,
+        step_name: str,
+    ) -> List["PipelineStepStateDescriptor"]:
+        return []
+
+    def publish_operation_descriptor(
+        self,
+        context,
+        *,
+        step_name: str,
+    ) -> Optional["PipelineStepOperationDescriptor"]:
         return None
 
     def after_participant_publish(
@@ -339,6 +356,30 @@ class CompositePipelineObserver(PipelineObserver):
         for observer in self._observers:
             targets.extend(observer.run_publish_targets(context, logs_prefix=logs_prefix))
         return targets
+
+    def publish_produced_state_descriptors(
+        self,
+        context,
+        *,
+        step_name: str,
+    ) -> List["PipelineStepStateDescriptor"]:
+        descriptors: List["PipelineStepStateDescriptor"] = []
+        for observer in self._observers:
+            descriptors.extend(observer.publish_produced_state_descriptors(context, step_name=step_name))
+        return descriptors
+
+    def publish_operation_descriptor(
+        self,
+        context,
+        *,
+        step_name: str,
+    ) -> Optional["PipelineStepOperationDescriptor"]:
+        result: Optional["PipelineStepOperationDescriptor"] = None
+        for observer in self._observers:
+            descriptor = observer.publish_operation_descriptor(context, step_name=step_name)
+            if descriptor is not None:
+                result = descriptor
+        return result
 
     def participant_publish_targets(
         self,

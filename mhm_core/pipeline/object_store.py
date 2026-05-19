@@ -1,13 +1,13 @@
-"""Lazy object-store helpers for the pipeline kernel.
+"""Object-store contracts and lazy backend helpers for the pipeline kernel.
 
 The minimal pipeline package should be importable without AWS libraries. Keep
-all boto3/botocore imports inside functions that are only called by S3-backed
+concrete backend imports inside functions that are only called by backend-backed
 execution paths.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Protocol
 
 
 class NoOpObjectStoreClient:
@@ -20,20 +20,52 @@ class NoOpObjectStoreClient:
         )
 
 
+class ObjectStoreClient(Protocol):
+    """Minimal object-store client contract used by backend-specific adapters."""
+
+    def get_paginator(self, operation_name: str) -> Any:
+        """Return a paginator for a backend-specific list operation."""
+
+
+class ObjectStoreBackend(Protocol):
+    """Backend contract for object-store locator handling."""
+
+    scheme: str
+
+    def client(self) -> ObjectStoreClient:
+        """Return a concrete client for this backend."""
+
+
+def locator_scheme(locator: str) -> str:
+    """Return the URI scheme for a storage locator, or an empty string for paths."""
+
+    text = str(locator or "").strip()
+    if "://" not in text:
+        return ""
+    scheme, _, _ = text.partition("://")
+    return scheme.lower()
+
+
+def locator_needs_object_store(locator: str) -> bool:
+    """Return whether a locator needs an object-store client."""
+
+    return locator_scheme(locator) in {"s3"}
+
+
 def create_boto3_session(*, profile_name: str | None = None) -> Any:
-    """Create a boto3 session only when an S3-backed path needs one."""
+    """Compatibility wrapper for the S3 backend session factory."""
 
-    import boto3
+    from .backends.s3 import create_boto3_session as _create_boto3_session
 
-    return boto3.session.Session(profile_name=profile_name) if profile_name else boto3.session.Session()
+    return _create_boto3_session(profile_name=profile_name)
 
 
 def create_s3_client(*, session: Any = None, profile_name: str | None = None) -> Any:
-    """Create an S3 client using a supplied session or a lazily-created session."""
+    """Compatibility wrapper for the S3 backend client factory."""
 
-    if session is None:
-        session = create_boto3_session(profile_name=profile_name)
-    return session.client("s3")
+    from .backends.s3 import create_s3_client as _create_s3_client
+
+    return _create_s3_client(session=session, profile_name=profile_name)
 
 
 def client_error_code(exc: BaseException) -> str:
@@ -61,30 +93,23 @@ def is_missing_key_error(exc: BaseException) -> bool:
 
 
 def split_s3_uri(uri: str) -> tuple[str, str]:
-    """Split an S3 URI into bucket and key."""
+    """Compatibility wrapper for S3 URI parsing."""
 
-    if not str(uri).startswith("s3://"):
-        raise ValueError(f"Expected s3:// URI, got {uri}")
-    remainder = str(uri)[len("s3://") :]
-    bucket, _, key = remainder.partition("/")
-    if not bucket:
-        raise ValueError(f"Invalid S3 URI: {uri}")
-    return bucket, key
+    from .backends.s3 import split_s3_uri as _split_s3_uri
 
-
-def locator_needs_object_store(locator: str) -> bool:
-    """Return whether a locator needs an object-store client."""
-
-    return str(locator).strip().startswith("s3://")
+    return _split_s3_uri(uri)
 
 
 __all__ = [
     "NoOpObjectStoreClient",
+    "ObjectStoreBackend",
+    "ObjectStoreClient",
     "client_error_code",
     "create_boto3_session",
     "create_s3_client",
     "is_client_error",
     "is_missing_key_error",
     "locator_needs_object_store",
+    "locator_scheme",
     "split_s3_uri",
 ]

@@ -34,8 +34,12 @@ def minimal_pipeline_contract(repo_root: str | Path = ".") -> PackageImportContr
             "uvicorn",
         ),
         lazy_only_prefixes=("boto3", "botocore"),
-        lazy_modules=(root / "mhm_core" / "pipeline" / "object_store.py",),
+        lazy_modules=(
+            root / "mhm_core" / "pipeline" / "object_store.py",
+            root / "mhm_core" / "pipeline" / "backends" / "s3.py",
+        ),
         excluded_patterns=(
+            "*/mhm_core/pipeline/derived_features_runner.py",
             "*/mhm_core/pipeline/steps/combine_features.py",
             "*/mhm_core/pipeline/steps/derived_features.py",
             "*/mhm_core/pipeline/steps/ontology_*.py",

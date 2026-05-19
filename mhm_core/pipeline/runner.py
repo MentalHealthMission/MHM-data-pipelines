@@ -15,9 +15,9 @@ from collections import defaultdict
 from .capabilities import EntitySelectionCapability
 from .context import create_run_context, resolve_output_prefix, set_cache_refresh_policy, spec_needs_s3_client
 from .discovery import discover_participants
-from .object_store import client_error_code, create_boto3_session, locator_needs_object_store, split_s3_uri
+from .object_store import client_error_code, create_boto3_session, locator_needs_object_store, locator_scheme, split_s3_uri
 from .plugins import load_pipeline_observer, load_pipeline_publisher, validate_profile_spec
-from .queue import PRIORITY_RANK, select_next_spec
+from .queue import PRIORITY_RANK, QueueBackend, select_next_queue_spec
 from .refresh_plan import build_refresh_plan
 from .spec import DEFAULT_PIPELINE_PROFILE, RunSpec, load_spec, validate_spec
 from .steps import build_steps
@@ -519,7 +519,7 @@ def _should_suspend(context, queue_prefix: str, last_suspend_probe: float) -> bo
     now = time.monotonic()
     if now - last_suspend_probe < SUSPEND_CHECK_INTERVAL_SECONDS:
         return False
-    next_entry = select_next_spec(context.s3_client, queue_prefix, states=("pending",))
+    next_entry = select_next_queue_spec(_queue_backend(context.s3_client, queue_prefix), states=("pending",))
     if next_entry is None:
         return False
     if next_entry.priority not in {"urgent", "ludicrous"}:
@@ -541,6 +541,15 @@ def _should_suspend(context, queue_prefix: str, last_suspend_probe: float) -> bo
         )
         return True
     return False
+
+
+def _queue_backend(object_store_client, queue_prefix: str) -> QueueBackend:
+    scheme = locator_scheme(queue_prefix)
+    if scheme == "s3":
+        from .backends.s3 import S3QueueBackend
+
+        return S3QueueBackend(object_store_client, queue_prefix)
+    raise ValueError(f"Unsupported queue backend for locator scheme '{scheme or 'local'}': {queue_prefix}")
 
 
 if __name__ == "__main__":  # pragma: no cover

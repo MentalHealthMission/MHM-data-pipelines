@@ -11,7 +11,7 @@ import logging
 from .spec import RunSpec
 from .discovery import discover_participants
 from .extensions import PipelineExtensionRegistry
-from .manifest import ParticipantManifest, load_participant_manifest
+from .manifest import EntityManifest, ParticipantManifest, load_entity_manifest, load_participant_manifest
 from .object_store import NoOpObjectStoreClient, create_s3_client
 from .observers import NoOpPipelineObserver, PipelineObserver
 from .publishing import NoOpPipelinePublisher, PipelinePublisher
@@ -54,6 +54,7 @@ class RunContext:
     participant_sites: Dict[str, str] = field(default_factory=dict)
     batch_participants: Optional[List[str]] = None
     current_participant: Optional[str] = None
+    entity_manifests: Dict[str, EntityManifest] = field(default_factory=dict)
     participant_manifests: Dict[str, ParticipantManifest] = field(default_factory=dict)
     merged_base_prefix: str = ""
     refresh_plan: Optional[RefreshPlan] = None
@@ -86,6 +87,21 @@ class RunContext:
             self.entity_groups.update(self.participant_sites)
         if self.entity_groups and not self.participant_sites:
             self.participant_sites.update(self.entity_groups)
+        if self.participant_manifests and not self.entity_manifests:
+            self.entity_manifests.update(self.participant_manifests)
+        if self.entity_manifests and not self.participant_manifests:
+            self.participant_manifests.update(
+                {
+                    entity_id: ParticipantManifest(
+                        participant_id=manifest.entity_id,
+                        site=manifest.group,
+                        metrics=manifest.metrics,
+                        updated_at=manifest.updated_at,
+                        last_run_id=manifest.last_run_id,
+                    )
+                    for entity_id, manifest in self.entity_manifests.items()
+                }
+            )
         _bind_compat_extension_state(self)
 
     def ensure_directories(self) -> None:
@@ -215,6 +231,25 @@ def resolve_output_prefix(template: str, *, run_id: str) -> str:
     ).rstrip("/")
 
 
+def ensure_entity_manifest(context: RunContext, entity_id: str) -> EntityManifest:
+    manifests = getattr(context, "entity_manifests", None)
+    if manifests is None:
+        manifests = {}
+        setattr(context, "entity_manifests", manifests)
+    if entity_id not in manifests:
+        group = entity_group(context, entity_id)
+        if not group:
+            raise KeyError(f"Group unknown for entity {entity_id}; cannot load manifest")
+        manifest = load_entity_manifest(
+            context.s3_client,
+            group=group,
+            entity_id=entity_id,
+            base_prefix=context.merged_base_prefix,
+        )
+        manifests[entity_id] = manifest
+    return manifests[entity_id]
+
+
 def ensure_participant_manifest(context: RunContext, participant_id: str) -> ParticipantManifest:
     if participant_id not in context.participant_manifests:
         site = context.participant_sites.get(participant_id)
@@ -227,6 +262,8 @@ def ensure_participant_manifest(context: RunContext, participant_id: str) -> Par
             base_prefix=context.merged_base_prefix,
         )
         context.participant_manifests[participant_id] = manifest
+        if hasattr(context, "entity_manifests"):
+            context.entity_manifests[participant_id] = manifest
     return context.participant_manifests[participant_id]
 
 
@@ -396,6 +433,7 @@ __all__ = [
     "active_participants",
     "cache_refresh_policy",
     "entity_group",
+    "ensure_entity_manifest",
     "ensure_participant_manifest",
     "ensure_summary_manifest",
     "ensure_latest_measurement_manifest",

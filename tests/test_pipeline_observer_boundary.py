@@ -486,6 +486,78 @@ for forbidden_prefix in ("connect_summary", "pandas", "rdflib"):
         self.assertEqual(selected, ["participant-1"])
         self.assertEqual(resumed, ["participant-1"])
 
+    def test_queue_selection_is_backend_neutral_with_s3_adapter_compatibility(self) -> None:
+        from datetime import datetime, timezone
+
+        from mhm_core.pipeline.backends.s3 import S3QueueBackend
+        from mhm_core.pipeline.queue import QueueEntry, select_next_queue_spec
+
+        class MemoryQueue:
+            def list_specs(self, *, states):
+                return [
+                    QueueEntry("pending", "slow.yaml", "low", datetime(2026, 5, 19, tzinfo=timezone.utc)),
+                    QueueEntry("pending", "fast.yaml", "urgent", datetime(2026, 5, 19, tzinfo=timezone.utc)),
+                ]
+
+        class Body:
+            def __init__(self, payload: bytes):
+                self.payload = payload
+
+            def read(self):
+                return self.payload
+
+        class Paginator:
+            def paginate(self, *, Bucket, Prefix):
+                return [
+                    {
+                        "Contents": [
+                            {
+                                "Key": f"{Prefix}queued.yaml",
+                                "LastModified": datetime(2026, 5, 19, tzinfo=timezone.utc),
+                            }
+                        ]
+                    }
+                ]
+
+        class FakeS3:
+            def get_paginator(self, operation):
+                self.operation = operation
+                return Paginator()
+
+            def get_object(self, *, Bucket, Key):
+                return {"Body": Body(b"priority: high\n")}
+
+        selected = select_next_queue_spec(MemoryQueue(), states=("pending",))
+        self.assertEqual(selected.key, "fast.yaml")
+
+        s3_selected = select_next_queue_spec(S3QueueBackend(FakeS3(), "s3://queue-root/specs"), states=("pending",))
+        self.assertEqual(s3_selected.priority, "high")
+        self.assertEqual(s3_selected.key, "queued.yaml")
+
+    def test_merge_manifest_has_neutral_entity_schema_with_participant_aliases(self) -> None:
+        from mhm_core.pipeline.manifest import EntityManifest, ParticipantManifest
+        from mhm_core.pipeline.latest_measurement_manifest import LatestMeasurementManifest
+        from mhm_core.pipeline.summary_manifest import SummaryManifest
+
+        manifest = EntityManifest(entity_id="entity-1", group="group-a")
+        payload = manifest.to_dict()
+
+        self.assertEqual(payload["entity_id"], "entity-1")
+        self.assertEqual(payload["group"], "group-a")
+        self.assertEqual(payload["participant_id"], "entity-1")
+        self.assertEqual(payload["site"], "group-a")
+
+        compat = ParticipantManifest.from_dict("participant-1", "site-a", payload)
+        self.assertEqual(compat.participant_id, "entity-1")
+        self.assertEqual(compat.site, "group-a")
+
+        summary = SummaryManifest(participant_id="entity-1", site="group-a").to_dict()
+        latest = LatestMeasurementManifest(participant_id="entity-1", site="group-a").to_dict()
+        self.assertEqual(summary["entity_id"], "entity-1")
+        self.assertEqual(summary["group"], "group-a")
+        self.assertEqual(latest["entity_id"], "entity-1")
+        self.assertEqual(latest["group"], "group-a")
+
     def test_core_publish_step_has_no_project_output_assumptions(self) -> None:
         source = Path("mhm_core/pipeline/steps/publish.py").read_text(encoding="utf-8")
         forbidden = [

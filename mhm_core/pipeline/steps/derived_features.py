@@ -9,7 +9,7 @@ import yaml
 
 from .base import PipelineStep
 from ..context import RunContext, active_participants
-from ...derived_features.runner import run_derived_features_for_participant
+from ..derived_features_runner import run_derived_features_for_participant
 from ...derived_features.registry import build_derived_spec_from_root, build_derived_spec_from_registry
 
 

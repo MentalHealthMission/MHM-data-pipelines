@@ -23,8 +23,18 @@ class LatestMeasurementManifest:
     updated_at: Optional[str] = None
     last_run_id: Optional[str] = None
 
+    @property
+    def entity_id(self) -> str:
+        return self.participant_id
+
+    @property
+    def group(self) -> str:
+        return self.site
+
     def to_dict(self) -> Dict[str, object]:
         return {
+            "entity_id": self.entity_id,
+            "group": self.group,
             "participant_id": self.participant_id,
             "site": self.site,
             "source_watermarks": self.source_watermarks,
@@ -37,8 +47,8 @@ class LatestMeasurementManifest:
     @classmethod
     def from_dict(cls, participant_id: str, site: str, data: Dict[str, object]) -> "LatestMeasurementManifest":
         return cls(
-            participant_id=participant_id,
-            site=site,
+            participant_id=str(data.get("entity_id") or data.get("participant_id") or participant_id),
+            site=str(data.get("group") or data.get("site") or site),
             source_watermarks=dict(data.get("source_watermarks", {})),
             measurement_files=list(data.get("measurement_files", [])),
             results=dict(data.get("results", {})),
