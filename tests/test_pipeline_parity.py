@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 import json
 import subprocess
 import sys
@@ -39,6 +40,22 @@ class PipelineParityHarnessTests(unittest.TestCase):
 
             self.assertTrue(report.equivalent, report.to_dict())
             self.assertEqual(report.matched, ["logs/manifest.json"])
+
+    def test_compares_gzip_files_by_decompressed_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old = root / "old"
+            new = root / "new"
+            old.mkdir()
+            new.mkdir()
+            payload = b"entity,value\nalpha,1\n"
+            (old / "summary.csv.gz").write_bytes(gzip.compress(payload, mtime=1))
+            (new / "summary.csv.gz").write_bytes(gzip.compress(payload, mtime=2))
+
+            report = compare_run_directories(old, new)
+
+            self.assertTrue(report.equivalent, report.to_dict())
+            self.assertEqual(report.matched, ["summary.csv.gz"])
 
     def test_reports_changed_deterministic_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

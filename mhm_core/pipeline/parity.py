@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from fnmatch import fnmatch
+import gzip
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -21,6 +22,7 @@ DEFAULT_IGNORE_PATTERNS = (
 )
 
 DEFAULT_VOLATILE_KEYS = {
+    "completed_at",
     "created_at",
     "duration_seconds",
     "elapsed_seconds",
@@ -137,6 +139,9 @@ def parity_digest(
             rows.append(_normalize_value(json.loads(line), root=root, volatile_keys=set(volatile_keys)))
         body = json.dumps(rows, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return sha256(body).hexdigest(), "jsonl"
+    if ".gz" in suffixes:
+        with gzip.open(path, "rb") as handle:
+            return sha256(handle.read()).hexdigest(), "gzip"
     if ".gz" not in suffixes and _looks_like_utf8(path):
         text = path.read_text(encoding="utf-8")
         text = text.replace(str(root), "<RUN_ROOT>")
