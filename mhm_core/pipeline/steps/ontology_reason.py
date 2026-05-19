@@ -14,7 +14,7 @@ import pandas as pd
 import yaml
 
 from .base import PipelineStep
-from ..context import RunContext, active_participants
+from ..context import RunContext, active_entities
 from ...derived_features.catalog import build_catalog
 from ...derived_features.utils import ensure_output_dir
 from ...ontology.reason import (
@@ -116,11 +116,11 @@ class OntologyReasonStep(PipelineStep):
         rapids_output_index = _build_rapids_output_index(context=context)
         emit_trace_graph = bool(self.options.get("trace_graph", True))
 
-        participants = active_participants(context)
+        entity_ids = active_entities(context)
         processed = 0
-        for participant_id in participants:
-            unified_path = unified_dir / participant_id / "unified_features.csv"
-            participant_out = ensure_output_dir(output_dir, participant_id)
+        for entity_id in entity_ids:
+            unified_path = unified_dir / entity_id / "unified_features.csv"
+            entity_out = ensure_output_dir(output_dir, entity_id)
             inferred = pd.DataFrame()
             trace = pd.DataFrame()
             unified = pd.DataFrame()
@@ -128,7 +128,7 @@ class OntologyReasonStep(PipelineStep):
                 unified = pd.read_csv(unified_path)
             if not unified.empty:
                 graph = build_graph(
-                    participant_id=participant_id,
+                    participant_id=entity_id,
                     unified=unified,
                     feature_plan=feature_plan,
                     metric_mapping=metric_mapping,
@@ -137,29 +137,29 @@ class OntologyReasonStep(PipelineStep):
                 for rule_path in rules_paths:
                     graph = apply_rules(graph=graph, rule_path=rule_path, tokens=tokens)
 
-                ttl_path = participant_out / "ontology.ttl"
+                ttl_path = entity_out / "ontology.ttl"
                 graph.serialize(destination=str(ttl_path), format="turtle")
 
                 inferred = inferred_phenotypes(graph)
                 if not inferred.empty:
-                    inferred.to_csv(participant_out / "inferred_phenotypes.csv", index=False)
+                    inferred.to_csv(entity_out / "inferred_phenotypes.csv", index=False)
                 if self.options.get("trace"):
                     trace = trace_phenotypes(graph)
                     if not trace.empty:
                         trace = _attach_trace_sources(
                             trace=trace,
-                            participant_id=participant_id,
+                            participant_id=entity_id,
                             trace_sources=trace_sources,
                         )
-                        trace.to_csv(participant_out / "trace.csv", index=False)
+                        trace.to_csv(entity_out / "trace.csv", index=False)
                         if self.options.get("trace_summary", True):
                             max_paths = int(self.options.get("trace_max_paths", 3))
                             summary = summarize_trace(trace, max_paths=max_paths)
                             if not summary.empty:
-                                summary.to_csv(participant_out / "trace_summary.csv", index=False)
+                                summary.to_csv(entity_out / "trace_summary.csv", index=False)
             if emit_trace_graph:
                 trace_graph = _build_trace_graph(
-                    participant_id=participant_id,
+                    participant_id=entity_id,
                     run_id=context.run_id,
                     run_dir=context.workspace_dir,
                     feature_plan_raw=feature_plan_raw,
@@ -169,18 +169,18 @@ class OntologyReasonStep(PipelineStep):
                     derived_output_index=derived_output_index,
                     rapids_output_index=rapids_output_index,
                 )
-                (participant_out / "trace_graph.json").write_text(
+                (entity_out / "trace_graph.json").write_text(
                     json.dumps(trace_graph, indent=2),
                     encoding="utf-8",
                 )
                 trace_view = _build_trace_view(trace_graph)
-                (participant_out / "trace_view.json").write_text(
+                (entity_out / "trace_view.json").write_text(
                     json.dumps(trace_view, indent=2),
                     encoding="utf-8",
                 )
             processed += 1
 
-        return {"status": "ok", "participants": processed, "output_dir": str(output_dir)}
+        return {"status": "ok", "entities": processed, "participants": processed, "output_dir": str(output_dir)}
 
 
 def _build_trace_source_index(feature_plan: Dict[str, object]) -> Dict[str, Dict[str, str]]:

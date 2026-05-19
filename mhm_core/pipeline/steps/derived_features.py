@@ -8,8 +8,8 @@ from typing import Dict, List, Optional
 import yaml
 
 from .base import PipelineStep
-from ..context import RunContext, active_participants
-from ..derived_features_runner import run_derived_features_for_participant
+from ..context import RunContext, active_entities
+from ..derived_features_runner import run_derived_features_for_entity
 from ...derived_features.registry import build_derived_spec_from_root, build_derived_spec_from_registry
 
 
@@ -128,25 +128,25 @@ class DerivedFeaturesStep(PipelineStep):
         if input_dir_raw:
             input_dir = Path(str(input_dir_raw).format(run_id=context.run_id)).expanduser().resolve()
 
-        participants = self.options.get("participants")
-        if isinstance(participants, list):
-            participant_ids = [str(pid) for pid in participants if str(pid).strip()]
-        elif isinstance(participants, str) and participants.strip():
-            participant_ids = [pid.strip() for pid in participants.split(",") if pid.strip()]
+        entities = self.options.get("entities", self.options.get("participants"))
+        if isinstance(entities, list):
+            entity_ids = [str(entity_id) for entity_id in entities if str(entity_id).strip()]
+        elif isinstance(entities, str) and entities.strip():
+            entity_ids = [entity_id.strip() for entity_id in entities.split(",") if entity_id.strip()]
         else:
-            participant_ids = active_participants(context)
+            entity_ids = active_entities(context)
 
         results: Dict[str, object] = {}
-        for participant_id in participant_ids:
-            self.log(context, f"Running derived_features for {participant_id}")
-            results[participant_id] = run_derived_features_for_participant(
+        for entity_id in entity_ids:
+            self.log(context, f"Running derived_features for {entity_id}")
+            results[entity_id] = run_derived_features_for_entity(
                 context,
-                participant_id,
+                entity_id,
                 spec_path=spec_path,
                 output_dir=output_dir,
                 input_dir=input_dir,
             )
-        return {"status": "ok", "participants": len(participant_ids), "details": results}
+        return {"status": "ok", "entities": len(entity_ids), "participants": len(entity_ids), "details": results}
 
 
 __all__ = ["DerivedFeaturesStep"]

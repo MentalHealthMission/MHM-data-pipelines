@@ -9,15 +9,19 @@ from typing import Any, Dict, List, Optional, Set
 import logging
 
 from .spec import RunSpec
-from .discovery import discover_participants
+from .discovery import discover_entities
 from .extensions import PipelineExtensionRegistry
 from .manifest import EntityManifest, ParticipantManifest, load_entity_manifest, load_participant_manifest
 from .object_store import NoOpObjectStoreClient, create_s3_client
 from .observers import NoOpPipelineObserver, PipelineObserver
 from .publishing import NoOpPipelinePublisher, PipelinePublisher
 from .refresh_plan import CacheRefreshPolicy, RefreshPlan, SummaryCachePolicy
-from .latest_measurement_manifest import LatestMeasurementManifest, load_latest_measurement_manifest
-from .summary_manifest import SummaryManifest, load_summary_manifest
+from .latest_measurement_manifest import (
+    EntityLatestMeasurementManifest,
+    LatestMeasurementManifest,
+    load_entity_latest_measurement_manifest,
+)
+from .summary_manifest import EntitySummaryManifest, SummaryManifest, load_entity_summary_manifest
 
 
 @dataclass
@@ -61,11 +65,11 @@ class RunContext:
     cache_refresh_policy: Optional[CacheRefreshPolicy] = None
     summary_cache_policy: Optional[SummaryCachePolicy] = None
     summary_manifest_prefix: Optional[str] = None
-    summary_manifests: Dict[str, SummaryManifest] = field(default_factory=dict)
+    summary_manifests: Dict[str, EntitySummaryManifest] = field(default_factory=dict)
     summary_outputs: Dict[str, SummaryState] = field(default_factory=dict)
     latest_measurement_manifest_prefix: Optional[str] = None
     latest_measurement_output_prefix: Optional[str] = None
-    latest_measurement_manifests: Dict[str, LatestMeasurementManifest] = field(default_factory=dict)
+    latest_measurement_manifests: Dict[str, EntityLatestMeasurementManifest] = field(default_factory=dict)
     latest_measurement_outputs: Dict[str, LatestMeasurementState] = field(default_factory=dict)
     extensions: PipelineExtensionRegistry = field(default_factory=PipelineExtensionRegistry)
     spec_locator: str = ""
@@ -164,18 +168,18 @@ def create_run_context(
     group_map = getattr(spec.source, "entity_group_map", None)
     if isinstance(group_map, dict):
         set_entity_groups(context, group_map)
-    if spec.source.discover_all and not spec.source.participants:
-        participants, discovered_map = discover_participants(
+    if spec.source.discover_all and not spec.source.entities:
+        entities, discovered_map = discover_entities(
             s3_client,
             bucket=spec.source.bucket,
             prefix=spec.source.prefix,
             logger=context.logger,
-            sites=getattr(spec.source, "sites", None),
+            groups=getattr(spec.source, "groups", None),
         )
-        spec.source.participants = participants
+        spec.source.entities = entities
         spec.source.entity_group_map.update(discovered_map)
         set_entity_groups(context, discovered_map)
-        context.logger.info("[spec] Discovered %d participants via discover_all", len(participants))
+        context.logger.info("[spec] Discovered %d entities via discover_all", len(entities))
 
     return context
 
@@ -310,11 +314,11 @@ def latest_measurement_outputs(context: RunContext) -> Dict[str, LatestMeasureme
     return extension_state(context, "latest_measurement").setdefault("outputs", context.latest_measurement_outputs)
 
 
-def summary_manifests(context: RunContext) -> Dict[str, SummaryManifest]:
+def summary_manifests(context: RunContext) -> Dict[str, EntitySummaryManifest]:
     return extension_state(context, "summary").setdefault("manifests", context.summary_manifests)
 
 
-def latest_measurement_manifests(context: RunContext) -> Dict[str, LatestMeasurementManifest]:
+def latest_measurement_manifests(context: RunContext) -> Dict[str, EntityLatestMeasurementManifest]:
     return extension_state(context, "latest_measurement").setdefault(
         "manifests",
         context.latest_measurement_manifests,
@@ -352,47 +356,80 @@ def set_cache_refresh_policy(context: RunContext, policy: CacheRefreshPolicy) ->
     extension_state(context, "cache")["refresh_policy"] = policy
 
 
-def ensure_summary_manifest(context: RunContext, participant_id: str) -> SummaryManifest:
+def ensure_entity_summary_manifest(context: RunContext, entity_id: str) -> EntitySummaryManifest:
     manifests = summary_manifests(context)
-    if participant_id not in manifests:
-        site = context.participant_sites.get(participant_id)
-        if not site:
-            raise KeyError(f"Site unknown for participant {participant_id}; cannot load summary manifest")
+    if entity_id not in manifests:
+        group = entity_group(context, entity_id)
+        if not group:
+            raise KeyError(f"Group unknown for entity {entity_id}; cannot load summary manifest")
         prefix = context.summary_manifest_prefix
         if not prefix:
-            manifests[participant_id] = SummaryManifest(participant_id=participant_id, site=site)
+            manifests[entity_id] = EntitySummaryManifest(entity_id=entity_id, group=group)
         else:
-            manifest = load_summary_manifest(
+            manifest = load_entity_summary_manifest(
                 context.s3_client,
-                site=site,
-                participant_id=participant_id,
+                group=group,
+                entity_id=entity_id,
                 manifest_prefix=prefix,
             )
-            manifests[participant_id] = manifest
-    return manifests[participant_id]
+            manifests[entity_id] = manifest
+    return manifests[entity_id]
+
+
+def ensure_summary_manifest(context: RunContext, participant_id: str) -> SummaryManifest:
+    manifest = ensure_entity_summary_manifest(context, participant_id)
+    if isinstance(manifest, SummaryManifest):
+        return manifest
+    compat = SummaryManifest(
+        participant_id=manifest.entity_id,
+        site=manifest.group,
+        source_watermarks=manifest.source_watermarks,
+        summary_files=manifest.summary_files,
+        updated_at=manifest.updated_at,
+        last_run_id=manifest.last_run_id,
+    )
+    summary_manifests(context)[participant_id] = compat
+    return compat
+
+
+def ensure_entity_latest_measurement_manifest(context: RunContext, entity_id: str) -> EntityLatestMeasurementManifest:
+    manifests = latest_measurement_manifests(context)
+    if entity_id not in manifests:
+        group = entity_group(context, entity_id)
+        if not group:
+            raise KeyError(f"Group unknown for entity {entity_id}; cannot load latest-measurement manifest")
+        prefix = context.latest_measurement_manifest_prefix
+        if not prefix:
+            manifests[entity_id] = EntityLatestMeasurementManifest(
+                entity_id=entity_id,
+                group=group,
+            )
+        else:
+            manifest = load_entity_latest_measurement_manifest(
+                context.s3_client,
+                group=group,
+                entity_id=entity_id,
+                manifest_prefix=prefix,
+            )
+            manifests[entity_id] = manifest
+    return manifests[entity_id]
 
 
 def ensure_latest_measurement_manifest(context: RunContext, participant_id: str) -> LatestMeasurementManifest:
-    manifests = latest_measurement_manifests(context)
-    if participant_id not in manifests:
-        site = context.participant_sites.get(participant_id)
-        if not site:
-            raise KeyError(f"Site unknown for participant {participant_id}; cannot load latest-measurement manifest")
-        prefix = context.latest_measurement_manifest_prefix
-        if not prefix:
-            manifests[participant_id] = LatestMeasurementManifest(
-                participant_id=participant_id,
-                site=site,
-            )
-        else:
-            manifest = load_latest_measurement_manifest(
-                context.s3_client,
-                site=site,
-                participant_id=participant_id,
-                manifest_prefix=prefix,
-            )
-            manifests[participant_id] = manifest
-    return manifests[participant_id]
+    manifest = ensure_entity_latest_measurement_manifest(context, participant_id)
+    if isinstance(manifest, LatestMeasurementManifest):
+        return manifest
+    compat = LatestMeasurementManifest(
+        participant_id=manifest.entity_id,
+        site=manifest.group,
+        source_watermarks=manifest.source_watermarks,
+        measurement_files=manifest.measurement_files,
+        results=manifest.results,
+        updated_at=manifest.updated_at,
+        last_run_id=manifest.last_run_id,
+    )
+    latest_measurement_manifests(context)[participant_id] = compat
+    return compat
 
 
 def active_participants(context: RunContext) -> List[str]:
@@ -434,6 +471,8 @@ __all__ = [
     "cache_refresh_policy",
     "entity_group",
     "ensure_entity_manifest",
+    "ensure_entity_summary_manifest",
+    "ensure_entity_latest_measurement_manifest",
     "ensure_participant_manifest",
     "ensure_summary_manifest",
     "ensure_latest_measurement_manifest",

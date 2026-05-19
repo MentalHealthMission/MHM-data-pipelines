@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import json
 import logging
 from pathlib import Path
@@ -13,7 +14,7 @@ import pandas as pd
 from pandas.errors import EmptyDataError
 import yaml
 
-from .context import RunContext
+from .context import RunContext, entity_group
 from ..derived_features.utils import ensure_output_dir
 
 
@@ -113,8 +114,8 @@ def _load_module(script_path: Path):
 
 def _resolve_metric_path(
     merged_dir: Path,
-    site: str,
-    participant_id: str,
+    group: str,
+    entity_id: str,
     metric: str,
     input_spec: Mapping[str, Any],
     run_id: Optional[str],
@@ -123,15 +124,18 @@ def _resolve_metric_path(
     if path_override:
         try:
             rendered = str(path_override).format(
-                site=site,
-                participant_id=participant_id,
+                group=group,
+                entity_id=entity_id,
+                entity=entity_id,
+                site=group,
+                participant_id=entity_id,
                 metric=metric,
                 run_id=run_id or "",
             )
         except KeyError:
             rendered = str(path_override)
         return Path(rendered).expanduser()
-    metric_dir = merged_dir / site / participant_id / metric
+    metric_dir = merged_dir / group / entity_id / metric
     if not metric_dir.exists():
         return None
     for suffix in (".csv.gz", ".csv", ".parquet"):
@@ -178,9 +182,9 @@ def _parse_inputs(raw_inputs: object) -> Dict[str, Dict[str, Any]]:
     raise ValueError("inputs must be a mapping or list")
 
 
-def run_derived_features_for_participant(
+def run_derived_features_for_entity(
     context: RunContext,
-    participant_id: str,
+    entity_id: str,
     *,
     spec_path: Path,
     output_dir: Path,
@@ -191,18 +195,19 @@ def run_derived_features_for_participant(
     if not features:
         return {"status": "skipped", "reason": "no features"}
 
-    site = context.participant_sites.get(participant_id)
-    if not site:
+    group = entity_group(context, entity_id)
+    if not group:
         for candidate in context.merged_dir.iterdir():
-            if (candidate / participant_id).exists():
-                site = candidate.name
-                context.participant_sites[participant_id] = site
+            if (candidate / entity_id).exists():
+                group = candidate.name
+                context.entity_groups[entity_id] = group
+                context.participant_sites[entity_id] = group
                 break
-    if not site:
-        raise KeyError(f"Unknown site for participant {participant_id}")
+    if not group:
+        raise KeyError(f"Unknown group for entity {entity_id}")
 
     merged_dir = input_dir or context.merged_dir
-    participant_out_dir = ensure_output_dir(output_dir, participant_id)
+    entity_out_dir = ensure_output_dir(output_dir, entity_id)
     outputs: Dict[str, str] = {}
 
     for feature in features:
@@ -224,8 +229,8 @@ def run_derived_features_for_participant(
                 continue
             metric_path = _resolve_metric_path(
                 merged_dir,
-                site,
-                participant_id,
+                group,
+                entity_id,
                 str(metric),
                 input_spec,
                 run_id=context.run_id,
@@ -240,15 +245,25 @@ def run_derived_features_for_participant(
             raise AttributeError(f"{script_path} must define compute()")
 
         params = dict(feature.get("params") or {})
-        result = module.compute(
-            inputs=inputs,
-            input_specs=input_specs,
-            params=params,
-            participant_id=participant_id,
-            logger=context.logger,
-        )
+        compute_kwargs = {
+            "inputs": inputs,
+            "input_specs": input_specs,
+            "params": params,
+            "participant_id": entity_id,
+            "logger": context.logger,
+        }
+        try:
+            signature = inspect.signature(module.compute)
+        except (TypeError, ValueError):
+            signature = None
+        if signature is not None and (
+            "entity_id" in signature.parameters
+            or any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values())
+        ):
+            compute_kwargs["entity_id"] = entity_id
+        result = module.compute(**compute_kwargs)
         if result is None:
-            context.logger.info("[derived ] %s produced no output for %s", feature_id, participant_id)
+            context.logger.info("[derived ] %s produced no output for %s", feature_id, entity_id)
             continue
 
         output_map: Dict[str, pd.DataFrame]
@@ -264,11 +279,30 @@ def run_derived_features_for_participant(
             filename = output_names.get(name)
             if not filename:
                 filename = f"{feature_id}.csv" if name == "default" else f"{feature_id}_{name}.csv"
-            target = participant_out_dir / filename
+            target = entity_out_dir / filename
             df.to_csv(target, index=False)
             outputs[f"{feature_id}:{name}"] = str(target)
 
     return {"status": "ok", "outputs": outputs}
 
 
-__all__ = ["run_derived_features_for_participant"]
+def run_derived_features_for_participant(
+    context: RunContext,
+    participant_id: str,
+    *,
+    spec_path: Path,
+    output_dir: Path,
+    input_dir: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Compatibility wrapper for participant-named callers."""
+
+    return run_derived_features_for_entity(
+        context,
+        participant_id,
+        spec_path=spec_path,
+        output_dir=output_dir,
+        input_dir=input_dir,
+    )
+
+
+__all__ = ["run_derived_features_for_entity", "run_derived_features_for_participant"]

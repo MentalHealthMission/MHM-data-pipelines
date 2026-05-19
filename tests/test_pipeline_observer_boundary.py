@@ -534,10 +534,95 @@ for forbidden_prefix in ("connect_summary", "pandas", "rdflib"):
         self.assertEqual(s3_selected.priority, "high")
         self.assertEqual(s3_selected.key, "queued.yaml")
 
+    def test_source_discovery_prefers_entity_group_language(self) -> None:
+        from mhm_core.pipeline.discovery import discover_entities, discover_participants
+
+        class Paginator:
+            def paginate(self, *, Bucket, Prefix, Delimiter):
+                if Prefix == "output/" and Delimiter == "/":
+                    return [{"CommonPrefixes": [{"Prefix": "output/group-a/"}]}]
+                if Prefix == "output/group-a/" and Delimiter == "/":
+                    return [{"CommonPrefixes": [{"Prefix": "output/group-a/entity-1/"}]}]
+                return [{"CommonPrefixes": []}]
+
+        class FakeS3:
+            def get_paginator(self, operation):
+                return Paginator()
+
+        entities, entity_group_map = discover_entities(
+            FakeS3(),
+            bucket="example",
+            prefix="output",
+            logger=logging.getLogger("test.discovery"),
+        )
+        self.assertEqual(entities, ["entity-1"])
+        self.assertEqual(entity_group_map, {"entity-1": "group-a"})
+
+        participants, site_map = discover_participants(
+            FakeS3(),
+            bucket="example",
+            prefix="output",
+            logger=logging.getLogger("test.discovery"),
+        )
+        self.assertEqual(participants, entities)
+        self.assertEqual(site_map, entity_group_map)
+
+    def test_feature_steps_prefer_entity_options_with_participant_aliases(self) -> None:
+        import mhm_core.pipeline.steps.derived_features as derived_module
+        from mhm_core.pipeline.steps.combine_features import CombineFeaturesStep
+        from mhm_core.pipeline.steps.derived_features import DerivedFeaturesStep
+
+        context = SimpleNamespace(
+            run_id="entity-step-smoke",
+            workspace_dir=Path("/tmp/entity-step-smoke"),
+            entity_groups={"entity-1": "group-a"},
+            logger=logging.getLogger("test.entity_steps"),
+        )
+
+        captured: list[list[str]] = []
+
+        class RecordingCombine(CombineFeaturesStep):
+            def run_command(self, context, cmd):
+                captured.append(list(cmd))
+
+        RecordingCombine({"entities": ["entity-1"]}).run(context)
+        self.assertIn("--entities", captured[0])
+        self.assertNotIn("--participants", captured[0])
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            spec_path = Path(tmp_dir) / "derived.yaml"
+            spec_path.write_text("features: []\n", encoding="utf-8")
+            calls: list[str] = []
+            original = derived_module.run_derived_features_for_entity
+
+            def fake_runner(context, entity_id, *, spec_path, output_dir, input_dir=None):
+                calls.append(entity_id)
+                return {"status": "ok"}
+
+            try:
+                derived_module.run_derived_features_for_entity = fake_runner
+                result = DerivedFeaturesStep({"spec": str(spec_path), "entities": ["entity-1"]}).run(context)
+            finally:
+                derived_module.run_derived_features_for_entity = original
+
+        self.assertEqual(calls, ["entity-1"])
+        self.assertEqual(result["entities"], 1)
+        self.assertEqual(result["participants"], 1)
+
     def test_merge_manifest_has_neutral_entity_schema_with_participant_aliases(self) -> None:
+        from mhm_core.pipeline.latest_measurement_manifest import (
+            EntityLatestMeasurementManifest,
+            LatestMeasurementManifest,
+            entity_latest_measurement_manifest_object_key,
+            latest_measurement_manifest_s3_key,
+        )
         from mhm_core.pipeline.manifest import EntityManifest, ParticipantManifest
-        from mhm_core.pipeline.latest_measurement_manifest import LatestMeasurementManifest
-        from mhm_core.pipeline.summary_manifest import SummaryManifest
+        from mhm_core.pipeline.summary_manifest import (
+            EntitySummaryManifest,
+            SummaryManifest,
+            entity_summary_manifest_object_key,
+            summary_manifest_s3_key,
+        )
 
         manifest = EntityManifest(entity_id="entity-1", group="group-a")
         payload = manifest.to_dict()
@@ -551,12 +636,25 @@ for forbidden_prefix in ("connect_summary", "pandas", "rdflib"):
         self.assertEqual(compat.participant_id, "entity-1")
         self.assertEqual(compat.site, "group-a")
 
-        summary = SummaryManifest(participant_id="entity-1", site="group-a").to_dict()
-        latest = LatestMeasurementManifest(participant_id="entity-1", site="group-a").to_dict()
+        summary = EntitySummaryManifest(entity_id="entity-1", group="group-a").to_dict()
+        latest = EntityLatestMeasurementManifest(entity_id="entity-1", group="group-a").to_dict()
         self.assertEqual(summary["entity_id"], "entity-1")
         self.assertEqual(summary["group"], "group-a")
         self.assertEqual(latest["entity_id"], "entity-1")
         self.assertEqual(latest["group"], "group-a")
+
+        summary_compat = SummaryManifest(participant_id="entity-1", site="group-a")
+        latest_compat = LatestMeasurementManifest(participant_id="entity-1", site="group-a")
+        self.assertEqual(summary_compat.entity_id, "entity-1")
+        self.assertEqual(latest_compat.group, "group-a")
+        self.assertEqual(
+            entity_summary_manifest_object_key("group-a", "entity-1", manifest_prefix="s3://bucket/manifests"),
+            summary_manifest_s3_key("group-a", "entity-1", manifest_prefix="s3://bucket/manifests"),
+        )
+        self.assertEqual(
+            entity_latest_measurement_manifest_object_key("group-a", "entity-1", manifest_prefix="s3://bucket/latest"),
+            latest_measurement_manifest_s3_key("group-a", "entity-1", manifest_prefix="s3://bucket/latest"),
+        )
 
     def test_core_publish_step_has_no_project_output_assumptions(self) -> None:
         source = Path("mhm_core/pipeline/steps/publish.py").read_text(encoding="utf-8")

@@ -14,7 +14,7 @@ from collections import defaultdict
 
 from .capabilities import EntitySelectionCapability
 from .context import create_run_context, resolve_output_prefix, set_cache_refresh_policy, spec_needs_s3_client
-from .discovery import discover_participants
+from .discovery import discover_entities
 from .object_store import client_error_code, create_boto3_session, locator_needs_object_store, locator_scheme, split_s3_uri
 from .plugins import load_pipeline_observer, load_pipeline_publisher, validate_profile_spec
 from .queue import PRIORITY_RANK, QueueBackend, select_next_queue_spec
@@ -78,7 +78,7 @@ def cmd_validate(
     if spec.source.discover_all and not spec.source.entities and s3_client is None:
         session = _boto3_session()
         s3_client = session.client("s3")
-    _maybe_discover_participants(spec, s3_client, logger=logging.getLogger("mhm_core.pipeline.validate"))
+    _maybe_discover_entities(spec, s3_client, logger=logging.getLogger("mhm_core.pipeline.validate"))
     errors = validate_spec(spec) + validate_profile_spec(spec, default_profile=default_pipeline_profile)
     if errors:
         for err in errors:
@@ -113,7 +113,7 @@ def cmd_run(
     if spec_needs_s3_client(spec) and s3_client is None:
         session = _boto3_session(profile_name=args.profile)
         s3_client = session.client("s3")
-    _maybe_discover_participants(spec, s3_client, logger=logging.getLogger("mhm_core.pipeline.discovery"))
+    _maybe_discover_entities(spec, s3_client, logger=logging.getLogger("mhm_core.pipeline.discovery"))
     errors = validate_spec(spec) + validate_profile_spec(spec, default_profile=default_pipeline_profile)
     if errors:
         for err in errors:
@@ -261,23 +261,29 @@ def _run_step_with_timing(context, step):
     return {"status": "ok", "result": metrics, "duration_seconds": duration_seconds}
 
 
-def _maybe_discover_participants(spec: RunSpec, s3_client, *, logger: logging.Logger) -> None:
+def _maybe_discover_entities(spec: RunSpec, s3_client, *, logger: logging.Logger) -> None:
     if not getattr(spec.source, "discover_all", False):
         return
-    if spec.source.participants:
+    if spec.source.entities:
         return
     if s3_client is None:
         raise RuntimeError("source.discover_all requires an S3 client")
-    participants, site_map = discover_participants(
+    entities, entity_group_map = discover_entities(
         s3_client,
         bucket=spec.source.bucket,
         prefix=spec.source.prefix,
         logger=logger,
-        sites=getattr(spec.source, "sites", None),
+        groups=getattr(spec.source, "groups", None),
     )
-    spec.source.participants = participants
-    spec.source.site_map = site_map
-    logger.info("Discovered %d participants across %d sites", len(participants), len(set(site_map.values())))
+    spec.source.entities = entities
+    spec.source.entity_group_map = entity_group_map
+    logger.info("Discovered %d entities across %d groups", len(entities), len(set(entity_group_map.values())))
+
+
+def _maybe_discover_participants(spec: RunSpec, s3_client, *, logger: logging.Logger) -> None:
+    """Compatibility wrapper for the historical runner helper name."""
+
+    _maybe_discover_entities(spec, s3_client, logger=logger)
 
 
 def _build_entity_batches(spec: RunSpec, entities: list[str], entity_groups: dict[str, str]) -> list[list[str]]:

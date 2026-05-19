@@ -7,7 +7,7 @@ from typing import Dict, List
 import yaml
 
 from .base import PipelineStep
-from ..context import RunContext, active_participants
+from ..context import RunContext, active_entities, entity_group
 from ...derived_features.utils import ensure_output_dir
 from ...ontology.config import UnificationFeature
 from ...ontology.unify import merge_unified_outputs, unify_features_for_participant
@@ -54,39 +54,40 @@ class OntologyUnifyStep(PipelineStep):
         output_dir = Path(str(self.options.get("output_dir", context.workspace_dir / "ontology" / "unified")).format(run_id=context.run_id)).expanduser()
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        participants = active_participants(context)
+        entity_ids = active_entities(context)
         processed = 0
-        for participant_id in participants:
-            site = context.participant_sites.get(participant_id)
-            if not site:
+        for entity_id in entity_ids:
+            group = entity_group(context, entity_id)
+            if not group:
                 for candidate in merged_dir.iterdir():
-                    if (candidate / participant_id).exists():
-                        site = candidate.name
-                        context.participant_sites[participant_id] = site
+                    if (candidate / entity_id).exists():
+                        group = candidate.name
+                        context.entity_groups[entity_id] = group
+                        context.participant_sites[entity_id] = group
                         break
-            if not site:
-                context.logger.warning("Skipping %s (site unknown)", participant_id)
+            if not group:
+                context.logger.warning("Skipping %s (group unknown)", entity_id)
                 continue
 
             outputs = unify_features_for_participant(
                 features=features,
                 merged_dir=merged_dir,
-                site=site,
-                participant_id=participant_id,
+                site=group,
+                participant_id=entity_id,
             )
             if not outputs:
                 continue
-            participant_out = ensure_output_dir(output_dir, participant_id)
+            entity_out = ensure_output_dir(output_dir, entity_id)
             for output in outputs:
-                target = participant_out / f"{output.feature_id}.csv"
+                target = entity_out / f"{output.feature_id}.csv"
                 output.dataframe.to_csv(target, index=False)
 
             merged = merge_unified_outputs(outputs)
             if not merged.empty:
-                merged.to_csv(participant_out / "unified_features.csv", index=False)
+                merged.to_csv(entity_out / "unified_features.csv", index=False)
             processed += 1
 
-        return {"status": "ok", "participants": processed, "output_dir": str(output_dir)}
+        return {"status": "ok", "entities": processed, "participants": processed, "output_dir": str(output_dir)}
 
 
 __all__ = ["OntologyUnifyStep"]

@@ -7,7 +7,7 @@ from typing import Dict
 import sys
 
 from .base import PipelineStep
-from ..context import RunContext, active_participants
+from ..context import RunContext, active_entities
 
 
 class CombineFeaturesStep(PipelineStep):
@@ -25,14 +25,14 @@ class CombineFeaturesStep(PipelineStep):
             str(self.options.get("output_dir", context.workspace_dir / "combined_features")).format(run_id=context.run_id)
         ).resolve()
 
-        participants = self.options.get("participants")
-        participants_arg = None
-        if isinstance(participants, list):
-            participants_arg = ",".join(str(pid) for pid in participants if str(pid).strip())
-        elif isinstance(participants, str) and participants.strip():
-            participants_arg = participants.strip()
+        entities = self.options.get("entities", self.options.get("participants"))
+        entities_arg = None
+        if isinstance(entities, list):
+            entities_arg = ",".join(str(entity_id) for entity_id in entities if str(entity_id).strip())
+        elif isinstance(entities, str) and entities.strip():
+            entities_arg = entities.strip()
         else:
-            participants_arg = ",".join(active_participants(context))
+            entities_arg = ",".join(active_entities(context))
 
         rapids_glob = str(self.options.get("rapids_glob", "rapids_*.csv"))
         derived_glob = str(self.options.get("derived_glob", "*.csv"))
@@ -51,8 +51,8 @@ class CombineFeaturesStep(PipelineStep):
             "--derived-glob",
             derived_glob,
         ]
-        if participants_arg:
-            cmd.extend(["--participants", participants_arg])
+        if entities_arg:
+            cmd.extend(["--entities", entities_arg])
 
         self.log(context, f"Combining features into {output_dir}")
         self.run_command(context, cmd)

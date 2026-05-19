@@ -117,7 +117,7 @@ class PublishStep(PipelineStep):
         metrics_payload = {"run_id": run_id, "started_at": context.start_time.isoformat() + "Z", "metrics": context.metrics}
         metrics_path = context.logs_dir / "metrics.json"
         metrics_path.write_text(json.dumps(metrics_payload, indent=2), encoding="utf-8")
-        logs_prefix = outputs.logs_prefix.format(run_id=run_id, site="", participant_id="").rstrip("/")
+        logs_prefix = _format_run_locator(outputs.logs_prefix, run_id=run_id).rstrip("/")
         upload_stats["logs"].merge(
             self._publish_run_target(
                 context,
@@ -144,6 +144,8 @@ class PublishStep(PipelineStep):
             "run_id": run_id,
             "started_at": context.start_time.isoformat() + "Z",
             "completed_at": datetime.utcnow().isoformat() + "Z",
+            "entity_count": len(entity_group_map),
+            "participant_count": len(entity_group_map),
             "entities": [
                 {"entity_id": eid, "group": group}
                 for eid, group in entity_group_map.items()
@@ -156,7 +158,7 @@ class PublishStep(PipelineStep):
         }
         manifest_path = context.logs_dir / "manifest.json"
         manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-        manifest_key = outputs.manifest_key.format(run_id=run_id, site="", participant_id="")
+        manifest_key = _format_run_locator(outputs.manifest_key, run_id=run_id)
         upload_stats["logs"].merge(
             self._publish_run_target(
                 context,
@@ -303,10 +305,10 @@ class PublishStep(PipelineStep):
                 rel = file_path.relative_to(context.merged_dir)
                 tar.add(file_path, arcname=rel.as_posix())
 
-        archive_prefix = outputs.logs_prefix.format(run_id=run_id, site="", participant_id="").rstrip("/")
+        archive_prefix = _format_run_locator(outputs.logs_prefix, run_id=run_id).rstrip("/")
         custom_prefix = getattr(outputs, "archive_prefix", None)
         if custom_prefix:
-            archive_prefix = custom_prefix.format(run_id=run_id, site="", participant_id="").rstrip("/")
+            archive_prefix = _format_run_locator(str(custom_prefix), run_id=run_id).rstrip("/")
         archive_key = f"{archive_prefix}/{filename}"
         upload_result = publisher.publish_file(context, file_path=archive_path, destination=archive_key)
         return archive_key if upload_result.files else None
@@ -315,6 +317,18 @@ class PublishStep(PipelineStep):
 def _safe_metric_name(name: str) -> str:
     value = "".join(char if char.isalnum() else "_" for char in str(name).strip().lower())
     return value.strip("_") or "target"
+
+
+def _format_run_locator(template: str, *, run_id: str) -> str:
+    return str(template).format(
+        run_id=run_id,
+        group="",
+        entity_id="",
+        entity="",
+        site="",
+        participant_id="",
+        participant="",
+    )
 
 
 __all__ = ["PublishStep"]
