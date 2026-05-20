@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional
-import json
 import re
 import uuid
 
@@ -333,6 +332,18 @@ def load_spec(
 ) -> RunSpec:
     """Load a specification from a local path or object-store URI."""
 
+    data = load_spec_data(path, s3_client=s3_client, object_store=object_store)
+    return RunSpec.from_dict(data, default_profile=default_profile)
+
+
+def load_spec_data(
+    path: str,
+    *,
+    s3_client: Optional[Any] = None,
+    object_store: Optional[ObjectStore] = None,
+) -> MutableMapping[str, Any]:
+    """Load raw YAML spec data without applying project-specific adapters."""
+
     if locator_needs_object_store(path):
         if object_store is None:
             object_store = object_store_from_client(s3_client) if s3_client is not None else create_object_store_for_locator(path)
@@ -343,10 +354,7 @@ def load_spec(
             data = yaml.safe_load(fh)
     if not isinstance(data, MutableMapping):
         raise ValueError("Specification root must be a mapping/dictionary")
-    if object_store is None and s3_client is not None:
-        object_store = object_store_from_client(s3_client)
-    _resolve_manifest_native_inputs(data, spec_locator=path, object_store=object_store)
-    return RunSpec.from_dict(data, default_profile=default_profile)
+    return data
 
 
 def validate_spec(spec: RunSpec) -> List[str]:
@@ -400,152 +408,6 @@ def validate_spec(spec: RunSpec) -> List[str]:
     return errors
 
 
-def _split_s3_uri(uri: str) -> tuple[str, str]:
-    return split_s3_uri(uri)
-
-
-def _resolve_manifest_native_inputs(
-    data: MutableMapping[str, Any],
-    *,
-    spec_locator: str,
-    object_store: Optional[ObjectStore],
-) -> None:
-    source = data.get("source")
-    if isinstance(source, MutableMapping):
-        source_state_manifest = str(source.get("source_state_manifest", "")).strip()
-        if source_state_manifest:
-            _apply_source_state_manifest(
-                source,
-                manifest_locator=source_state_manifest,
-                spec_locator=spec_locator,
-                object_store=object_store,
-            )
-
-
-def _apply_source_state_manifest(
-    source: MutableMapping[str, Any],
-    *,
-    manifest_locator: str,
-    spec_locator: str,
-    object_store: Optional[ObjectStore],
-) -> None:
-    manifest = _load_json_document(manifest_locator, base_locator=spec_locator, object_store=object_store)
-    binding = manifest.get("data_root_binding", {}) if isinstance(manifest, dict) else {}
-    locator = str(getattr(binding, "get", lambda *_: "")("locator") if binding else "")
-    if not locator and isinstance(binding, dict):
-        locator = str(binding.get("locator", ""))
-    if locator.startswith("s3://"):
-        bucket, prefix = _split_s3_uri(locator)
-        if not source.get("locator"):
-            source["locator"] = locator.rstrip("/")
-        if not source.get("bucket"):
-            source["bucket"] = bucket
-        if not source.get("prefix"):
-            source["prefix"] = prefix
-
-    if not _source_has_groups(source):
-        coverage_locator = _linked_document_locator(manifest, "coverage_summary", base_locator=manifest_locator)
-        if coverage_locator:
-            coverage = _load_json_document(coverage_locator, base_locator=manifest_locator, object_store=object_store)
-            groups = [group for group, _entities in _coverage_group_rows(coverage)]
-            if groups:
-                source["groups"] = sorted(dict.fromkeys(groups))
-
-    if (not _source_has_entities(source)) and not bool(source.get("discover_all", False)):
-        coverage_locator = _linked_document_locator(manifest, "coverage_summary", base_locator=manifest_locator)
-        if coverage_locator:
-            coverage = _load_json_document(coverage_locator, base_locator=manifest_locator, object_store=object_store)
-            entity_ids: list[str] = []
-            for _group, row_entities in _coverage_group_rows(coverage):
-                entity_ids.extend(row_entities)
-            if entity_ids:
-                source["entities"] = sorted(dict.fromkeys(entity_ids))
-
-
-def _source_has_groups(source: Mapping[str, Any]) -> bool:
-    for key in ("groups", "sites"):
-        value = source.get(key)
-        if isinstance(value, list) and any(str(item).strip() for item in value):
-            return True
-    return False
-
-
-def _source_has_entities(source: Mapping[str, Any]) -> bool:
-    for key in ("entities", "participants"):
-        value = source.get(key)
-        if isinstance(value, list) and any(str(item).strip() for item in value):
-            return True
-    return False
-
-
-def _coverage_group_rows(coverage: Mapping[str, Any]) -> list[tuple[str, list[str]]]:
-    coverage_payload = coverage.get("coverage", coverage)
-    if not isinstance(coverage_payload, Mapping):
-        return []
-    group_rows = coverage_payload.get("group_summary", [])
-    if isinstance(group_rows, list) and group_rows:
-        rows: list[tuple[str, list[str]]] = []
-        for row in group_rows:
-            if not isinstance(row, Mapping):
-                continue
-            group = str(row.get("group", row.get("site", ""))).strip()
-            raw_entities = row.get("entities", row.get("participants", []))
-            entities = [str(item).strip() for item in raw_entities if str(item).strip()]
-            if group:
-                rows.append((group, entities))
-        return rows
-
-    site_rows = coverage_payload.get("site_summary", [])
-    rows = []
-    for row in site_rows if isinstance(site_rows, list) else []:
-        if not isinstance(row, Mapping):
-            continue
-        site = str(row.get("site", "")).strip()
-        raw_participants = row.get("participants", [])
-        participants = [str(item).strip() for item in raw_participants if str(item).strip()]
-        if site:
-            rows.append((site, participants))
-    return rows
-
-
-def _linked_document_locator(manifest: Mapping[str, Any], document_name: str, *, base_locator: str) -> str:
-    documents = manifest.get("documents", {}) if isinstance(manifest, Mapping) else {}
-    if not isinstance(documents, Mapping):
-        return ""
-    entry = documents.get(document_name, {})
-    if not isinstance(entry, Mapping):
-        return ""
-    locator = str(entry.get("locator", "")).strip()
-    if not locator:
-        return ""
-    return _resolve_relative_locator(locator, base_locator=base_locator)
-
-
-def _load_json_document(locator: str, *, base_locator: str, object_store: Optional[ObjectStore]) -> Dict[str, Any]:
-    resolved = _resolve_relative_locator(locator, base_locator=base_locator)
-    if locator_needs_object_store(resolved):
-        if object_store is None:
-            object_store = create_object_store_for_locator(resolved)
-        payload = object_store.read_bytes(resolved)
-        return json.loads(payload)
-    return json.loads(Path(resolved).expanduser().read_text(encoding="utf-8"))
-
-
-def _resolve_relative_locator(locator: str, *, base_locator: str) -> str:
-    if locator.startswith("s3://"):
-        return locator
-    path = Path(locator).expanduser()
-    if path.is_absolute():
-        return str(path)
-    if base_locator.startswith("s3://"):
-        bucket, key = _split_s3_uri(base_locator)
-        key_prefix = key.rsplit("/", 1)[0] if "/" in key else ""
-        joined = f"{key_prefix}/{locator}".strip("/")
-        return f"s3://{bucket}/{joined}"
-    base_path = Path(base_locator).expanduser()
-    return str((base_path.parent / locator).resolve())
-
-
 def _is_uuid(value: str) -> bool:
     try:
         uuid.UUID(value)
@@ -586,6 +448,7 @@ __all__ = [
     "PublishingConfig",
     "StepSpec",
     "is_uuid_identifier",
+    "load_spec_data",
     "load_spec",
     "validate_spec",
 ]

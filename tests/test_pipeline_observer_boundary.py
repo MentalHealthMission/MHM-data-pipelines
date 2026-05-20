@@ -258,7 +258,7 @@ for forbidden_prefix in ("connect_summary", "pandas", "rdflib"):
         )
 
     def test_manifest_native_source_loading_prefers_neutral_coverage_fields(self) -> None:
-        from mhm_core.pipeline.spec import load_spec
+        from connect_summary.pipeline.spec import load_spec
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

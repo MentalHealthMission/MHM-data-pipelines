@@ -9,7 +9,7 @@ import os
 import shutil
 import sys
 import time
-from typing import Optional
+from typing import Callable, Optional
 from collections import defaultdict
 
 from .capabilities import EntitySelectionCapability
@@ -28,12 +28,11 @@ from .object_store import (
     create_boto3_session,
     create_object_store_for_locator,
     locator_needs_object_store,
-    locator_scheme,
     object_store_client,
     object_store_from_client,
 )
 from .plugins import load_pipeline_observer, load_pipeline_publisher, validate_profile_spec
-from .queue import PRIORITY_RANK, QueueBackend, select_next_queue_spec
+from .queue import PRIORITY_RANK, queue_backend_for_locator, select_next_queue_spec
 from .refresh_plan import build_refresh_plan
 from .spec import DEFAULT_PIPELINE_PROFILE, RunSpec, load_spec, validate_spec
 from .steps import build_steps
@@ -47,6 +46,7 @@ def main(
     argv: Optional[list[str]] = None,
     *,
     default_pipeline_profile: str = DEFAULT_PIPELINE_PROFILE,
+    load_spec_fn: Callable[..., RunSpec] = load_spec,
 ) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -54,9 +54,9 @@ def main(
     logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
 
     if args.command == "validate":
-        return cmd_validate(args, default_pipeline_profile=default_pipeline_profile)
+        return cmd_validate(args, default_pipeline_profile=default_pipeline_profile, load_spec_fn=load_spec_fn)
     if args.command == "run":
-        return cmd_run(args, default_pipeline_profile=default_pipeline_profile)
+        return cmd_run(args, default_pipeline_profile=default_pipeline_profile, load_spec_fn=load_spec_fn)
     parser.print_help()
     return 1
 
@@ -84,6 +84,7 @@ def cmd_validate(
     args: argparse.Namespace,
     *,
     default_pipeline_profile: str = DEFAULT_PIPELINE_PROFILE,
+    load_spec_fn: Callable[..., RunSpec] = load_spec,
 ) -> int:
     session = None
     s3_client = None
@@ -92,7 +93,7 @@ def cmd_validate(
         session = _boto3_session()
         object_store = create_object_store_for_locator(args.spec, session=session)
         s3_client = object_store_client(object_store)
-    spec = load_spec(args.spec, s3_client=s3_client, object_store=object_store, default_profile=default_pipeline_profile)
+    spec = load_spec_fn(args.spec, s3_client=s3_client, object_store=object_store, default_profile=default_pipeline_profile)
     if spec.source.discover_all and not spec.source.entities and object_store is None:
         session = _boto3_session()
         object_store = create_object_store_for_locator(object_store_locator_for_spec(spec), session=session)
@@ -122,6 +123,7 @@ def cmd_run(
     args: argparse.Namespace,
     *,
     default_pipeline_profile: str = DEFAULT_PIPELINE_PROFILE,
+    load_spec_fn: Callable[..., RunSpec] = load_spec,
 ) -> int:
     session = None
     s3_client = None
@@ -130,7 +132,7 @@ def cmd_run(
         session = _boto3_session(profile_name=args.profile)
         object_store = create_object_store_for_locator(args.spec, session=session)
         s3_client = object_store_client(object_store)
-    spec = load_spec(args.spec, s3_client=s3_client, object_store=object_store, default_profile=default_pipeline_profile)
+    spec = load_spec_fn(args.spec, s3_client=s3_client, object_store=object_store, default_profile=default_pipeline_profile)
     if spec_needs_object_store(spec) and object_store is None:
         session = _boto3_session(profile_name=args.profile)
         object_store = create_object_store_for_locator(object_store_locator_for_spec(spec), session=session)
@@ -560,7 +562,7 @@ def _should_suspend(context, queue_prefix: str, last_suspend_probe: float) -> bo
     now = time.monotonic()
     if now - last_suspend_probe < SUSPEND_CHECK_INTERVAL_SECONDS:
         return False
-    next_entry = select_next_queue_spec(_queue_backend(context.s3_client, queue_prefix), states=("pending",))
+    next_entry = select_next_queue_spec(_queue_backend(context, queue_prefix), states=("pending",))
     if next_entry is None:
         return False
     if next_entry.priority not in {"urgent", "ludicrous"}:
@@ -584,13 +586,12 @@ def _should_suspend(context, queue_prefix: str, last_suspend_probe: float) -> bo
     return False
 
 
-def _queue_backend(object_store_client, queue_prefix: str) -> QueueBackend:
-    scheme = locator_scheme(queue_prefix)
-    if scheme == "s3":
-        from .backends.s3 import S3QueueBackend
-
-        return S3QueueBackend(object_store_client, queue_prefix)
-    raise ValueError(f"Unsupported queue backend for locator scheme '{scheme or 'local'}': {queue_prefix}")
+def _queue_backend(context, queue_prefix: str):
+    return queue_backend_for_locator(
+        queue_prefix,
+        object_store=getattr(context, "object_store", None),
+        s3_client=getattr(context, "s3_client", None),
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover
