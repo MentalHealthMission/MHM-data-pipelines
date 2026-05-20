@@ -47,6 +47,38 @@ def list_queue_specs(backend: QueueBackend, *, states: Iterable[str]) -> list[Qu
     return backend.list_specs(states=states)
 
 
+def queue_backend_for_locator(queue_prefix: str, *, object_store=None, s3_client=None) -> QueueBackend:
+    """Create the queue backend for a storage locator.
+
+    The queue contract is backend-neutral; this factory keeps the S3 client
+    dependency at the adapter edge while callers pass object-store locators.
+    """
+
+    from .object_store import (
+        create_object_store_for_locator,
+        locator_scheme,
+        object_store_client,
+        object_store_from_client,
+    )
+
+    scheme = locator_scheme(queue_prefix)
+    if scheme == "s3":
+        from .backends.s3 import S3QueueBackend
+
+        store = object_store
+        if store is None:
+            store = (
+                object_store_from_client(s3_client)
+                if s3_client is not None
+                else create_object_store_for_locator(queue_prefix)
+            )
+        client = object_store_client(store)
+        if client is None:
+            raise RuntimeError(f"Queue locator {queue_prefix} requires an S3-compatible object store client")
+        return S3QueueBackend(client, queue_prefix)
+    raise ValueError(f"Unsupported queue backend for locator scheme '{scheme or 'local'}': {queue_prefix}")
+
+
 def select_next_queue_spec(
     backend: QueueBackend,
     *,
@@ -149,6 +181,7 @@ __all__ = [
     "list_specs",
     "list_queue_specs",
     "normalize_priority",
+    "queue_backend_for_locator",
     "select_next_spec",
     "select_next_queue_spec",
     "split_s3_uri",

@@ -15,6 +15,7 @@ from .object_store import (
     ObjectStore,
     create_object_store_for_locator,
     locator_needs_object_store,
+    locator_scheme,
     object_store_from_client,
     split_s3_uri,
 )
@@ -35,6 +36,7 @@ class SourceConfig:
     bucket: str
     prefix: str
     entities: List[str]
+    locator: str = ""
     discover_all: bool = False
     groups: List[str] = field(default_factory=list)
     source_state_manifest: str = ""
@@ -44,6 +46,15 @@ class SourceConfig:
     def from_dict(cls, data: Mapping[str, Any]) -> "SourceConfig":
         bucket = str(data.get("bucket", "")).strip()
         prefix = str(data.get("prefix", "")).strip().strip("/")
+        locator = str(data.get("locator", data.get("source_locator", ""))).strip().rstrip("/")
+        if locator_scheme(locator) == "s3":
+            locator_bucket, locator_prefix = split_s3_uri(locator)
+            if not bucket:
+                bucket = locator_bucket
+            if not prefix:
+                prefix = locator_prefix.strip("/")
+        if not locator and bucket:
+            locator = f"s3://{bucket}/{prefix}" if prefix else f"s3://{bucket}"
         raw_entities = data.get("entities", data.get("participants", []))
         entities = [str(entity).strip() for entity in raw_entities if str(entity).strip()]
         discover_all = bool(data.get("discover_all", False))
@@ -60,6 +71,7 @@ class SourceConfig:
             bucket=bucket,
             prefix=prefix,
             entities=entities,
+            locator=locator,
             discover_all=discover_all,
             groups=groups,
             source_state_manifest=source_state_manifest,
@@ -424,6 +436,8 @@ def _apply_source_state_manifest(
         locator = str(binding.get("locator", ""))
     if locator.startswith("s3://"):
         bucket, prefix = _split_s3_uri(locator)
+        if not source.get("locator"):
+            source["locator"] = locator.rstrip("/")
         if not source.get("bucket"):
             source["bucket"] = bucket
         if not source.get("prefix"):

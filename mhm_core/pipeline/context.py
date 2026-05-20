@@ -207,6 +207,8 @@ def create_run_context(
 def spec_needs_object_store(spec: RunSpec) -> bool:
     """Return whether a spec requires an object-store adapter during context setup."""
 
+    if locator_needs_object_store(source_root_locator(spec.source)):
+        return True
     if spec.source.discover_all and not spec.source.entities:
         return True
     if spec.source.bucket:
@@ -233,6 +235,9 @@ def spec_needs_s3_client(spec: RunSpec) -> bool:
 
 
 def source_root_locator(source) -> str:
+    locator = str(getattr(source, "locator", "") or "").strip().rstrip("/")
+    if locator:
+        return locator
     bucket = str(getattr(source, "bucket", "") or "").strip()
     prefix = str(getattr(source, "prefix", "") or "").strip().strip("/")
     if bucket:
