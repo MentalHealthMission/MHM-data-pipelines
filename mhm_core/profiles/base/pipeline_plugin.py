@@ -17,9 +17,9 @@ class BasePipelineProfile(PipelineProfilePlugin):
     profile_id = "base"
 
     def register_steps(self, registry: Dict[str, Type["PipelineStep"]]) -> None:
+        from mhm_core.pipeline.integrations.derived_features import DerivedFeaturesStep
+        from mhm_core.pipeline.integrations.rapids import CombineFeaturesStep
         from mhm_core.pipeline.steps.base import NoOpStep
-        from mhm_core.pipeline.steps.combine_features import CombineFeaturesStep
-        from mhm_core.pipeline.steps.derived_features import DerivedFeaturesStep
         from mhm_core.pipeline.steps.publish import PublishStep
 
         steps: Dict[str, Type["PipelineStep"]] = {

@@ -568,9 +568,9 @@ for forbidden_prefix in ("connect_summary", "pandas", "rdflib"):
         self.assertEqual(site_map, entity_group_map)
 
     def test_feature_steps_prefer_entity_options_with_participant_aliases(self) -> None:
-        import mhm_core.pipeline.steps.derived_features as derived_module
-        from mhm_core.pipeline.steps.combine_features import CombineFeaturesStep
-        from mhm_core.pipeline.steps.derived_features import DerivedFeaturesStep
+        import mhm_core.pipeline.integrations.derived_features as derived_module
+        from mhm_core.pipeline.integrations.derived_features import DerivedFeaturesStep
+        from mhm_core.pipeline.integrations.rapids import CombineFeaturesStep
 
         context = SimpleNamespace(
             run_id="entity-step-smoke",
