@@ -298,6 +298,10 @@ def _drop_provenance_refactor_alias(
         return _is_redundant_coordinates(mapping.get(key), mapping)
     if key == "labels":
         return _is_redundant_labels(mapping.get(key), mapping)
+    if key == "locator":
+        return _is_redundant_source_locator(mapping.get(key), mapping)
+    if key == "entity_group_map":
+        return mapping.get(key) == {}
     legacy_partner = {
         "entity_count": "participant_count",
         "group_count": "site_count",
@@ -334,6 +338,17 @@ def _is_redundant_labels(value: Any, parent: Mapping[str, Any]) -> bool:
         for key in allowed_keys
         if key in value
     )
+
+
+def _is_redundant_source_locator(value: Any, parent: Mapping[str, Any]) -> bool:
+    if not isinstance(value, str):
+        return False
+    bucket = parent.get("bucket")
+    prefix = parent.get("prefix")
+    if not bucket or prefix is None:
+        return False
+    expected = f"s3://{bucket}/{str(prefix).strip('/')}"
+    return value.rstrip("/") == expected.rstrip("/")
 
 
 def _mapping_value_matches_parent(value: Mapping[str, Any], key: str, parent: Mapping[str, Any]) -> bool:

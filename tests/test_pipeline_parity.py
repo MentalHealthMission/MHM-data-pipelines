@@ -290,6 +290,111 @@ class PipelineParityHarnessTests(unittest.TestCase):
             self.assertFalse(report.equivalent)
             self.assertEqual([item.path for item in report.changed], ["logs/provenance/artifact_inventory.jsonl"])
 
+    def test_provenance_refactor_mode_accepts_redundant_source_locator_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old = root / "old" / "logs" / "provenance"
+            new = root / "new" / "logs" / "provenance"
+            old.mkdir(parents=True)
+            new.mkdir(parents=True)
+            old_payload = {
+                "manifest_type": "pipeline_spec_manifest",
+                "document_hash": "old-hash",
+                "spec_node_hash": "old-spec-node-hash",
+                "source": {
+                    "bucket": "connect-dev-output",
+                    "prefix": "output",
+                    "sites": ["test"],
+                    "participants": [],
+                },
+                "spec_node": {
+                    "source": {
+                        "bucket": "connect-dev-output",
+                        "prefix": "output",
+                        "sites": ["test"],
+                        "participants": [],
+                    }
+                },
+            }
+            new_payload = {
+                "manifest_type": "pipeline_spec_manifest",
+                "document_hash": "new-hash",
+                "spec_node_hash": "new-spec-node-hash",
+                "source": {
+                    "bucket": "connect-dev-output",
+                    "prefix": "output",
+                    "locator": "s3://connect-dev-output/output",
+                    "sites": ["test"],
+                    "groups": ["test"],
+                    "participants": [],
+                    "entities": [],
+                    "entity_group_map": {},
+                },
+                "spec_node": {
+                    "source": {
+                        "bucket": "connect-dev-output",
+                        "prefix": "output",
+                        "locator": "s3://connect-dev-output/output",
+                        "sites": ["test"],
+                        "groups": ["test"],
+                        "participants": [],
+                        "entities": [],
+                        "entity_group_map": {},
+                    }
+                },
+            }
+            (old / "pipeline_spec_manifest.json").write_text(json.dumps(old_payload), encoding="utf-8")
+            (new / "pipeline_spec_manifest.json").write_text(json.dumps(new_payload), encoding="utf-8")
+
+            strict = compare_run_directories(root / "old", root / "new")
+            normalized = compare_run_directories(
+                root / "old",
+                root / "new",
+                normalization=ParityNormalization(provenance_refactor=True),
+            )
+
+            self.assertFalse(strict.equivalent)
+            self.assertTrue(normalized.equivalent, normalized.to_dict())
+
+    def test_provenance_refactor_mode_reports_non_redundant_source_locator(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old = root / "old" / "logs" / "provenance"
+            new = root / "new" / "logs" / "provenance"
+            old.mkdir(parents=True)
+            new.mkdir(parents=True)
+            (old / "pipeline_spec_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "manifest_type": "pipeline_spec_manifest",
+                        "source": {"bucket": "connect-dev-output", "prefix": "output"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (new / "pipeline_spec_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "manifest_type": "pipeline_spec_manifest",
+                        "source": {
+                            "bucket": "connect-dev-output",
+                            "prefix": "output",
+                            "locator": "s3://different-bucket/output",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            report = compare_run_directories(
+                root / "old",
+                root / "new",
+                normalization=ParityNormalization(provenance_refactor=True),
+            )
+
+            self.assertFalse(report.equivalent)
+            self.assertEqual([item.path for item in report.changed], ["logs/provenance/pipeline_spec_manifest.json"])
+
     def test_provenance_refactor_mode_still_reports_semantic_coverage_changes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
