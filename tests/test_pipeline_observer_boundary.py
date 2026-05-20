@@ -530,7 +530,7 @@ for forbidden_prefix in ("connect_summary", "pandas", "rdflib"):
         selected = select_next_queue_spec(MemoryQueue(), states=("pending",))
         self.assertEqual(selected.key, "fast.yaml")
 
-        s3_selected = select_next_queue_spec(S3QueueBackend(FakeS3(), "s3://queue-root/specs"), states=("pending",))
+        s3_selected = select_next_queue_spec(S3QueueBackend(FakeS3(), "s3://queue-root/nested/specs"), states=("pending",))
         self.assertEqual(s3_selected.priority, "high")
         self.assertEqual(s3_selected.key, "queued.yaml")
 

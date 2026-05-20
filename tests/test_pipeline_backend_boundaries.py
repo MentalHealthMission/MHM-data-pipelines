@@ -290,6 +290,8 @@ class PipelineBackendBoundaryTests(unittest.TestCase):
         self.assertIn(str(result["manifest_target"]), store.objects)
         self.assertIn(str(result["request_target"]), store.objects)
         self.assertEqual(store.objects[str(result["queue_target"])], spec_payload.encode("utf-8"))
+        request_manifest = json.loads(store.objects[str(result["request_target"])].decode("utf-8"))
+        self.assertIn(str(request_manifest["submitted_at"]).replace(":", "-"), str(result["request_target"]))
 
     def test_pipeline_request_helper_has_no_inline_s3_writes(self) -> None:
         source = Path("connect_summary/pipeline/requests.py").read_text(encoding="utf-8")

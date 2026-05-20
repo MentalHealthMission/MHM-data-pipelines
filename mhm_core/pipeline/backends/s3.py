@@ -116,9 +116,10 @@ class S3QueueBackend:
 
     def list_specs(self, *, states: Iterable[str]) -> list[QueueEntry]:
         bucket, prefix = split_s3_uri(self.queue_prefix)
+        queue_root = prefix.strip("/")
         entries: list[QueueEntry] = []
         for state in states:
-            state_prefix = f"{prefix.rstrip('/')}/{state}/"
+            state_prefix = f"{queue_root}/{state}/" if queue_root else f"{state}/"
             paginator = self.s3_client.get_paginator("list_objects_v2")
             for page in paginator.paginate(Bucket=bucket, Prefix=state_prefix):
                 for obj in page.get("Contents", []):
@@ -131,10 +132,11 @@ class S3QueueBackend:
                     except Exception:
                         data = {}
                     priority = normalize_priority(getattr(data, "get", lambda *_: None)("priority"))
+                    display_key = key[len(state_prefix) :] if key.startswith(state_prefix) else key.rsplit("/", 1)[-1]
                     entries.append(
                         QueueEntry(
                             state=str(state),
-                            key=key.split("/", 2)[-1],
+                            key=display_key,
                             priority=priority,
                             last_modified=_ensure_utc(obj["LastModified"]),
                         )

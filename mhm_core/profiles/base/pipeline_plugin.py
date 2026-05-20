@@ -1,6 +1,8 @@
 """Base pipeline profile registrations.
 
-This profile intentionally exposes only source-agnostic steps.
+The base profile includes the generic step surface plus first-party optional
+integration steps. Use the minimal profile when exercising the strict pipeline
+kernel without derived-feature, RAPIDS, or publish integrations.
 """
 
 from __future__ import annotations
