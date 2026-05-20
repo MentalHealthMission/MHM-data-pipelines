@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from .object_store import is_client_error, is_missing_key_error
+from .object_store import ObjectStore, is_client_error, is_missing_key_error, object_store_from_client
 
 ISO_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 
@@ -126,11 +126,24 @@ def load_entity_latest_measurement_manifest(
     entity_id: str,
     manifest_prefix: str,
 ) -> EntityLatestMeasurementManifest:
-    key = entity_latest_measurement_manifest_object_key(group, entity_id, manifest_prefix=manifest_prefix)
-    bucket, _, s3_key = key[len("s3://") :].partition("/")
+    return load_entity_latest_measurement_manifest_from_store(
+        object_store_from_client(s3_client),
+        group=group,
+        entity_id=entity_id,
+        manifest_prefix=manifest_prefix,
+    )
+
+
+def load_entity_latest_measurement_manifest_from_store(
+    object_store: ObjectStore,
+    *,
+    group: str,
+    entity_id: str,
+    manifest_prefix: str,
+) -> EntityLatestMeasurementManifest:
+    locator = entity_latest_measurement_manifest_object_key(group, entity_id, manifest_prefix=manifest_prefix)
     try:
-        obj = s3_client.get_object(Bucket=bucket, Key=s3_key)
-        payload = obj["Body"].read()
+        payload = object_store.read_bytes(locator)
         data = json.loads(payload)
         if isinstance(data, dict):
             return EntityLatestMeasurementManifest.from_dict(entity_id, group, data)
@@ -147,16 +160,30 @@ def save_entity_latest_measurement_manifest(
     run_id: str,
     manifest_prefix: str,
 ) -> None:
+    save_entity_latest_measurement_manifest_to_store(
+        object_store_from_client(s3_client),
+        manifest,
+        run_id=run_id,
+        manifest_prefix=manifest_prefix,
+    )
+
+
+def save_entity_latest_measurement_manifest_to_store(
+    object_store: ObjectStore,
+    manifest: EntityLatestMeasurementManifest,
+    *,
+    run_id: str,
+    manifest_prefix: str,
+) -> None:
     manifest.updated_at = datetime.now(timezone.utc).strftime(ISO_FORMAT)
     manifest.last_run_id = run_id
-    key = entity_latest_measurement_manifest_object_key(
+    locator = entity_latest_measurement_manifest_object_key(
         manifest.group,
         manifest.entity_id,
         manifest_prefix=manifest_prefix,
     )
-    bucket, _, s3_key = key[len("s3://") :].partition("/")
     body = json.dumps(manifest.to_dict(), indent=2, sort_keys=True).encode("utf-8")
-    s3_client.put_object(Bucket=bucket, Key=s3_key, Body=body)
+    object_store.write_bytes(locator, body, content_type="application/json")
 
 
 def load_latest_measurement_manifest(
@@ -214,8 +241,10 @@ __all__ = [
     "entity_latest_measurement_manifest_object_key",
     "latest_measurement_manifest_s3_key",
     "load_entity_latest_measurement_manifest",
+    "load_entity_latest_measurement_manifest_from_store",
     "load_latest_measurement_manifest",
     "save_entity_latest_measurement_manifest",
+    "save_entity_latest_measurement_manifest_to_store",
     "save_latest_measurement_manifest",
     "write_local_latest_measurement_manifest",
 ]

@@ -13,9 +13,25 @@ from typing import Optional
 from collections import defaultdict
 
 from .capabilities import EntitySelectionCapability
-from .context import create_run_context, resolve_output_prefix, set_cache_refresh_policy, spec_needs_s3_client
-from .discovery import discover_entities
-from .object_store import client_error_code, create_boto3_session, locator_needs_object_store, locator_scheme, split_s3_uri
+from .context import (
+    create_run_context,
+    object_store_locator_for_spec,
+    resolve_output_prefix,
+    set_cache_refresh_policy,
+    source_root_locator,
+    spec_needs_object_store,
+)
+from .discovery import discover_entities_from_store
+from .object_store import (
+    ObjectStore,
+    client_error_code,
+    create_boto3_session,
+    create_object_store_for_locator,
+    locator_needs_object_store,
+    locator_scheme,
+    object_store_client,
+    object_store_from_client,
+)
 from .plugins import load_pipeline_observer, load_pipeline_publisher, validate_profile_spec
 from .queue import PRIORITY_RANK, QueueBackend, select_next_queue_spec
 from .refresh_plan import build_refresh_plan
@@ -71,14 +87,17 @@ def cmd_validate(
 ) -> int:
     session = None
     s3_client = None
+    object_store = None
     if _locator_needs_s3_client(args.spec):
         session = _boto3_session()
-        s3_client = session.client("s3")
-    spec = load_spec(args.spec, s3_client=s3_client, default_profile=default_pipeline_profile)
-    if spec.source.discover_all and not spec.source.entities and s3_client is None:
+        object_store = create_object_store_for_locator(args.spec, session=session)
+        s3_client = object_store_client(object_store)
+    spec = load_spec(args.spec, s3_client=s3_client, object_store=object_store, default_profile=default_pipeline_profile)
+    if spec.source.discover_all and not spec.source.entities and object_store is None:
         session = _boto3_session()
-        s3_client = session.client("s3")
-    _maybe_discover_entities(spec, s3_client, logger=logging.getLogger("mhm_core.pipeline.validate"))
+        object_store = create_object_store_for_locator(object_store_locator_for_spec(spec), session=session)
+        s3_client = object_store_client(object_store)
+    _maybe_discover_entities(spec, object_store, logger=logging.getLogger("mhm_core.pipeline.validate"))
     errors = validate_spec(spec) + validate_profile_spec(spec, default_profile=default_pipeline_profile)
     if errors:
         for err in errors:
@@ -106,14 +125,17 @@ def cmd_run(
 ) -> int:
     session = None
     s3_client = None
+    object_store = None
     if _locator_needs_s3_client(args.spec):
         session = _boto3_session(profile_name=args.profile)
-        s3_client = session.client("s3")
-    spec = load_spec(args.spec, s3_client=s3_client, default_profile=default_pipeline_profile)
-    if spec_needs_s3_client(spec) and s3_client is None:
+        object_store = create_object_store_for_locator(args.spec, session=session)
+        s3_client = object_store_client(object_store)
+    spec = load_spec(args.spec, s3_client=s3_client, object_store=object_store, default_profile=default_pipeline_profile)
+    if spec_needs_object_store(spec) and object_store is None:
         session = _boto3_session(profile_name=args.profile)
-        s3_client = session.client("s3")
-    _maybe_discover_entities(spec, s3_client, logger=logging.getLogger("mhm_core.pipeline.discovery"))
+        object_store = create_object_store_for_locator(object_store_locator_for_spec(spec), session=session)
+        s3_client = object_store_client(object_store)
+    _maybe_discover_entities(spec, object_store, logger=logging.getLogger("mhm_core.pipeline.discovery"))
     errors = validate_spec(spec) + validate_profile_spec(spec, default_profile=default_pipeline_profile)
     if errors:
         for err in errors:
@@ -124,7 +146,13 @@ def cmd_run(
         run_dir = spec.workspace.resolve_run_path(spec.run_id)
         shutil.rmtree(run_dir, ignore_errors=True)
 
-    context = create_run_context(spec, boto3_session=session, s3_client=s3_client, spec_locator=args.spec)
+    context = create_run_context(
+        spec,
+        boto3_session=session,
+        s3_client=s3_client,
+        object_store=object_store,
+        spec_locator=args.spec,
+    )
     context.pipeline_observer = load_pipeline_observer(spec.profile, default_profile=default_pipeline_profile)
     context.pipeline_publisher = load_pipeline_publisher(spec.profile, default_profile=default_pipeline_profile)
     context.logger.info("Starting pipeline run %s", spec.run_id)
@@ -261,17 +289,17 @@ def _run_step_with_timing(context, step):
     return {"status": "ok", "result": metrics, "duration_seconds": duration_seconds}
 
 
-def _maybe_discover_entities(spec: RunSpec, s3_client, *, logger: logging.Logger) -> None:
+def _maybe_discover_entities(spec: RunSpec, object_store: ObjectStore | None, *, logger: logging.Logger) -> None:
     if not getattr(spec.source, "discover_all", False):
         return
     if spec.source.entities:
         return
-    if s3_client is None:
-        raise RuntimeError("source.discover_all requires an S3 client")
-    entities, entity_group_map = discover_entities(
-        s3_client,
-        bucket=spec.source.bucket,
-        prefix=spec.source.prefix,
+    if object_store is None:
+        raise RuntimeError("source.discover_all requires an object-store backend")
+    object_store = _coerce_object_store(object_store)
+    entities, entity_group_map = discover_entities_from_store(
+        object_store,
+        source_locator=source_root_locator(spec.source),
         logger=logger,
         groups=getattr(spec.source, "groups", None),
     )
@@ -280,10 +308,10 @@ def _maybe_discover_entities(spec: RunSpec, s3_client, *, logger: logging.Logger
     logger.info("Discovered %d entities across %d groups", len(entities), len(set(entity_group_map.values())))
 
 
-def _maybe_discover_participants(spec: RunSpec, s3_client, *, logger: logging.Logger) -> None:
+def _maybe_discover_participants(spec: RunSpec, object_store: ObjectStore | None, *, logger: logging.Logger) -> None:
     """Compatibility wrapper for the historical runner helper name."""
 
-    _maybe_discover_entities(spec, s3_client, logger=logger)
+    _maybe_discover_entities(spec, object_store, logger=logger)
 
 
 def _build_entity_batches(spec: RunSpec, entities: list[str], entity_groups: dict[str, str]) -> list[list[str]]:
@@ -343,7 +371,7 @@ def _filter_completed_entities(
     if skip_completed_resume:
         context.logger.info("[resume   ] Skipping merged-data resume filter for selected step capability")
         return entities
-    if not context.merged_base_prefix.startswith("s3://"):
+    if not locator_needs_object_store(context.merged_base_prefix):
         context.logger.info("[resume   ] merged base prefix is not S3-backed; skipping resume filter")
         return entities
 
@@ -357,28 +385,24 @@ def _filter_completed_entities(
             continue
         entities_by_group[group].add(entity_id)
 
-    bucket, key_prefix = _split_s3_uri(context.merged_base_prefix)
-    paginator = context.s3_client.get_paginator("list_objects_v2")
+    object_store = _context_object_store(context)
     completed: set[str] = set()
 
     for group, group_entities in entities_by_group.items():
-        group_prefix = f"{key_prefix.rstrip('/')}/{group}/"
+        group_prefix = f"{context.merged_base_prefix.rstrip('/')}/{group}/"
         try:
-            for page in paginator.paginate(Bucket=bucket, Prefix=group_prefix):
-                for obj in page.get("Contents", []):
-                    key = obj.get("Key", "")
-                    if not key.endswith("/manifest.json"):
-                        continue
-                    rel = key[len(group_prefix) :]
-                    entity_id = rel.split("/", 1)[0].strip("/")
-                    if entity_id in group_entities:
-                        completed.add(entity_id)
+            for locator in object_store.iter_object_locators(group_prefix):
+                if not locator.endswith("/manifest.json"):
+                    continue
+                rel = locator[len(group_prefix) :]
+                entity_id = rel.split("/", 1)[0].strip("/")
+                if entity_id in group_entities:
+                    completed.add(entity_id)
         except Exception as exc:
             if not client_error_code(exc):
                 raise
             context.logger.warning(
-                "[resume   ] Failed listing published manifests under s3://%s/%s: %s",
-                bucket,
+                "[resume   ] Failed listing published manifests under %s: %s",
                 group_prefix,
                 exc,
             )
@@ -448,7 +472,7 @@ def _filter_entities_for_required_source_metrics(
     labels = sorted({str(capability.label).strip() for capability in capabilities if str(capability.label).strip()})
     label = ", ".join(labels) if labels else "source-metric"
 
-    source_prefix = str(context.spec.source.prefix).strip().strip("/")
+    source_locator = source_root_locator(context.spec.source).rstrip("/")
     kept: list[str] = []
     unknown_group_count = 0
     checked_prefixes = 0
@@ -463,11 +487,14 @@ def _filter_entities_for_required_source_metrics(
         for metric in metrics:
             metric_prefix = "/".join(
                 part.strip("/")
-                for part in [source_prefix, group, entity_id, metric]
+                for part in [source_locator, group, entity_id, metric]
                 if str(part).strip("/")
             )
             checked_prefixes += 1
-            if _s3_prefix_has_objects(context.s3_client, context.spec.source.bucket, f"{metric_prefix}/"):
+            if _object_prefix_has_objects(
+                _context_object_store(context),
+                f"{metric_prefix}/",
+            ):
                 kept.append(entity_id)
                 break
 
@@ -497,18 +524,26 @@ def _filter_participants_for_required_source_metrics(
 
 
 def _s3_prefix_has_objects(s3_client, bucket: str, prefix: str) -> bool:
-    try:
-        response = s3_client.list_objects_v2(Bucket=bucket, Prefix=prefix, MaxKeys=1)
-    except AttributeError:
-        paginator = s3_client.get_paginator("list_objects_v2")
-        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
-            return bool(page.get("Contents"))
-        return False
-    return bool(response.get("KeyCount") or response.get("Contents"))
+    """Compatibility wrapper for historical tests and callers."""
+
+    return object_store_from_client(s3_client).prefix_has_objects(f"s3://{bucket}/{prefix.strip('/')}/")
 
 
-def _split_s3_uri(uri: str) -> tuple[str, str]:
-    return split_s3_uri(uri)
+def _object_prefix_has_objects(object_store: ObjectStore, prefix_locator: str) -> bool:
+    return object_store.prefix_has_objects(prefix_locator)
+
+
+def _context_object_store(context) -> ObjectStore:
+    object_store = getattr(context, "object_store", None)
+    if object_store is not None:
+        return _coerce_object_store(object_store)
+    return object_store_from_client(context.s3_client)
+
+
+def _coerce_object_store(candidate) -> ObjectStore:
+    if hasattr(candidate, "iter_child_prefix_locators") and hasattr(candidate, "read_bytes"):
+        return candidate
+    return object_store_from_client(candidate)
 
 
 def _locator_needs_s3_client(locator: str) -> bool:

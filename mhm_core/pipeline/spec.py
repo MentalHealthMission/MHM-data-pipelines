@@ -11,7 +11,13 @@ import uuid
 
 import yaml
 
-from .object_store import create_s3_client, locator_needs_object_store, split_s3_uri
+from .object_store import (
+    ObjectStore,
+    create_object_store_for_locator,
+    locator_needs_object_store,
+    object_store_from_client,
+    split_s3_uri,
+)
 
 DEFAULT_PIPELINE_PROFILE = "base"
 
@@ -310,23 +316,24 @@ def load_spec(
     path: str,
     *,
     s3_client: Optional[Any] = None,
+    object_store: Optional[ObjectStore] = None,
     default_profile: str = DEFAULT_PIPELINE_PROFILE,
 ) -> RunSpec:
-    """Load a specification from a local path or an S3 URI."""
+    """Load a specification from a local path or object-store URI."""
 
     if locator_needs_object_store(path):
-        if s3_client is None:
-            s3_client = create_s3_client()
-        bucket, key = split_s3_uri(path)
-        obj = s3_client.get_object(Bucket=bucket, Key=key)
-        payload = obj["Body"].read()
+        if object_store is None:
+            object_store = object_store_from_client(s3_client) if s3_client is not None else create_object_store_for_locator(path)
+        payload = object_store.read_bytes(path)
         data = yaml.safe_load(payload)
     else:
         with Path(path).expanduser().open("r", encoding="utf-8") as fh:
             data = yaml.safe_load(fh)
     if not isinstance(data, MutableMapping):
         raise ValueError("Specification root must be a mapping/dictionary")
-    _resolve_manifest_native_inputs(data, spec_locator=path, s3_client=s3_client)
+    if object_store is None and s3_client is not None:
+        object_store = object_store_from_client(s3_client)
+    _resolve_manifest_native_inputs(data, spec_locator=path, object_store=object_store)
     return RunSpec.from_dict(data, default_profile=default_profile)
 
 
@@ -389,7 +396,7 @@ def _resolve_manifest_native_inputs(
     data: MutableMapping[str, Any],
     *,
     spec_locator: str,
-    s3_client,
+    object_store: Optional[ObjectStore],
 ) -> None:
     source = data.get("source")
     if isinstance(source, MutableMapping):
@@ -399,7 +406,7 @@ def _resolve_manifest_native_inputs(
                 source,
                 manifest_locator=source_state_manifest,
                 spec_locator=spec_locator,
-                s3_client=s3_client,
+                object_store=object_store,
             )
 
 
@@ -408,9 +415,9 @@ def _apply_source_state_manifest(
     *,
     manifest_locator: str,
     spec_locator: str,
-    s3_client,
+    object_store: Optional[ObjectStore],
 ) -> None:
-    manifest = _load_json_document(manifest_locator, base_locator=spec_locator, s3_client=s3_client)
+    manifest = _load_json_document(manifest_locator, base_locator=spec_locator, object_store=object_store)
     binding = manifest.get("data_root_binding", {}) if isinstance(manifest, dict) else {}
     locator = str(getattr(binding, "get", lambda *_: "")("locator") if binding else "")
     if not locator and isinstance(binding, dict):
@@ -425,7 +432,7 @@ def _apply_source_state_manifest(
     if not _source_has_groups(source):
         coverage_locator = _linked_document_locator(manifest, "coverage_summary", base_locator=manifest_locator)
         if coverage_locator:
-            coverage = _load_json_document(coverage_locator, base_locator=manifest_locator, s3_client=s3_client)
+            coverage = _load_json_document(coverage_locator, base_locator=manifest_locator, object_store=object_store)
             groups = [group for group, _entities in _coverage_group_rows(coverage)]
             if groups:
                 source["groups"] = sorted(dict.fromkeys(groups))
@@ -433,7 +440,7 @@ def _apply_source_state_manifest(
     if (not _source_has_entities(source)) and not bool(source.get("discover_all", False)):
         coverage_locator = _linked_document_locator(manifest, "coverage_summary", base_locator=manifest_locator)
         if coverage_locator:
-            coverage = _load_json_document(coverage_locator, base_locator=manifest_locator, s3_client=s3_client)
+            coverage = _load_json_document(coverage_locator, base_locator=manifest_locator, object_store=object_store)
             entity_ids: list[str] = []
             for _group, row_entities in _coverage_group_rows(coverage):
                 entity_ids.extend(row_entities)
@@ -500,14 +507,12 @@ def _linked_document_locator(manifest: Mapping[str, Any], document_name: str, *,
     return _resolve_relative_locator(locator, base_locator=base_locator)
 
 
-def _load_json_document(locator: str, *, base_locator: str, s3_client) -> Dict[str, Any]:
+def _load_json_document(locator: str, *, base_locator: str, object_store: Optional[ObjectStore]) -> Dict[str, Any]:
     resolved = _resolve_relative_locator(locator, base_locator=base_locator)
-    if resolved.startswith("s3://"):
-        if s3_client is None:
-            s3_client = create_s3_client()
-        bucket, key = split_s3_uri(resolved)
-        obj = s3_client.get_object(Bucket=bucket, Key=key)
-        payload = obj["Body"].read()
+    if locator_needs_object_store(resolved):
+        if object_store is None:
+            object_store = create_object_store_for_locator(resolved)
+        payload = object_store.read_bytes(resolved)
         return json.loads(payload)
     return json.loads(Path(resolved).expanduser().read_text(encoding="utf-8"))
 

@@ -9,19 +9,31 @@ from typing import Any, Dict, List, Optional, Set
 import logging
 
 from .spec import RunSpec
-from .discovery import discover_entities
+from .discovery import discover_entities_from_store
 from .extensions import PipelineExtensionRegistry
-from .manifest import EntityManifest, ParticipantManifest, load_entity_manifest, load_participant_manifest
-from .object_store import NoOpObjectStoreClient, create_s3_client
+from .manifest import (
+    EntityManifest,
+    ParticipantManifest,
+    load_entity_manifest_from_store,
+)
+from .object_store import (
+    NoOpObjectStore,
+    NoOpObjectStoreClient,
+    ObjectStore,
+    create_s3_client,
+    locator_needs_object_store,
+    object_store_client,
+    object_store_from_client,
+)
 from .observers import NoOpPipelineObserver, PipelineObserver
 from .publishing import NoOpPipelinePublisher, PipelinePublisher
 from .refresh_plan import CacheRefreshPolicy, RefreshPlan, SummaryCachePolicy
 from .latest_measurement_manifest import (
     EntityLatestMeasurementManifest,
     LatestMeasurementManifest,
-    load_entity_latest_measurement_manifest,
+    load_entity_latest_measurement_manifest_from_store,
 )
-from .summary_manifest import EntitySummaryManifest, SummaryManifest, load_entity_summary_manifest
+from .summary_manifest import EntitySummaryManifest, SummaryManifest, load_entity_summary_manifest_from_store
 
 
 @dataclass
@@ -50,6 +62,7 @@ class RunContext:
     latest_measurement_dir: Path
     logs_dir: Path
     s3_client: Any
+    object_store: ObjectStore = field(default_factory=NoOpObjectStore)
     start_time: datetime = field(default_factory=datetime.utcnow)
     metrics: Dict[str, object] = field(default_factory=dict)
     entity_groups: Dict[str, str] = field(default_factory=dict)
@@ -127,13 +140,20 @@ def create_run_context(
     *,
     boto3_session: Optional[Any] = None,
     s3_client: Any = None,
+    object_store: Optional[ObjectStore] = None,
     spec_locator: str = "",
 ) -> RunContext:
-    if s3_client is None:
-        if spec_needs_s3_client(spec):
+    if object_store is None:
+        if s3_client is not None:
+            object_store = object_store_from_client(s3_client)
+        elif spec_needs_object_store(spec):
             s3_client = create_s3_client(session=boto3_session)
+            object_store = object_store_from_client(s3_client)
         else:
             s3_client = NoOpObjectStoreClient()
+            object_store = NoOpObjectStore()
+    elif s3_client is None:
+        s3_client = object_store_client(object_store) or NoOpObjectStoreClient()
 
     run_dir = spec.workspace.resolve_run_path(spec.run_id)
     raw_dir = run_dir / "raw"
@@ -154,6 +174,7 @@ def create_run_context(
         latest_measurement_dir=latest_measurement_dir,
         logs_dir=logs_dir,
         s3_client=s3_client,
+        object_store=object_store,
         merged_base_prefix=merged_base_prefix,
         spec_locator=spec_locator,
         provenance_dir=logs_dir / "provenance",
@@ -169,10 +190,9 @@ def create_run_context(
     if isinstance(group_map, dict):
         set_entity_groups(context, group_map)
     if spec.source.discover_all and not spec.source.entities:
-        entities, discovered_map = discover_entities(
-            s3_client,
-            bucket=spec.source.bucket,
-            prefix=spec.source.prefix,
+        entities, discovered_map = discover_entities_from_store(
+            context.object_store,
+            source_locator=source_root_locator(spec.source),
             logger=context.logger,
             groups=getattr(spec.source, "groups", None),
         )
@@ -184,18 +204,18 @@ def create_run_context(
     return context
 
 
-def spec_needs_s3_client(spec: RunSpec) -> bool:
-    """Return whether a spec requires an S3-like client during context setup."""
+def spec_needs_object_store(spec: RunSpec) -> bool:
+    """Return whether a spec requires an object-store adapter during context setup."""
 
     if spec.source.discover_all and not spec.source.entities:
         return True
     if spec.source.bucket:
         return True
-    if str(getattr(spec.source, "source_state_manifest", "")).strip().startswith("s3://"):
+    if locator_needs_object_store(str(getattr(spec.source, "source_state_manifest", "")).strip()):
         return True
     outputs = spec.outputs
     return any(
-        str(value or "").strip().startswith("s3://")
+        locator_needs_object_store(str(value or "").strip())
         for value in (
             outputs.merged_prefix,
             outputs.summary_prefix,
@@ -204,6 +224,37 @@ def spec_needs_s3_client(spec: RunSpec) -> bool:
             outputs.archive_prefix,
         )
     )
+
+
+def spec_needs_s3_client(spec: RunSpec) -> bool:
+    """Compatibility wrapper for the historical S3-client check name."""
+
+    return spec_needs_object_store(spec)
+
+
+def source_root_locator(source) -> str:
+    bucket = str(getattr(source, "bucket", "") or "").strip()
+    prefix = str(getattr(source, "prefix", "") or "").strip().strip("/")
+    if bucket:
+        return f"s3://{bucket}/{prefix}" if prefix else f"s3://{bucket}"
+    return prefix
+
+
+def object_store_locator_for_spec(spec: RunSpec) -> str:
+    source_locator = source_root_locator(spec.source)
+    candidates = [
+        source_locator,
+        str(getattr(spec.source, "source_state_manifest", "") or "").strip(),
+        spec.outputs.merged_prefix,
+        spec.outputs.summary_prefix,
+        spec.outputs.manifest_key,
+        spec.outputs.logs_prefix,
+        spec.outputs.archive_prefix or "",
+    ]
+    for candidate in candidates:
+        if locator_needs_object_store(str(candidate or "").strip()):
+            return str(candidate).strip()
+    return source_locator
 
 
 def resolve_output_base_prefix(template: str, *, run_id: str) -> str:
@@ -244,8 +295,8 @@ def ensure_entity_manifest(context: RunContext, entity_id: str) -> EntityManifes
         group = entity_group(context, entity_id)
         if not group:
             raise KeyError(f"Group unknown for entity {entity_id}; cannot load manifest")
-        manifest = load_entity_manifest(
-            context.s3_client,
+        manifest = load_entity_manifest_from_store(
+            context.object_store,
             group=group,
             entity_id=entity_id,
             base_prefix=context.merged_base_prefix,
@@ -259,11 +310,18 @@ def ensure_participant_manifest(context: RunContext, participant_id: str) -> Par
         site = context.participant_sites.get(participant_id)
         if not site:
             raise KeyError(f"Site unknown for participant {participant_id}; cannot load manifest")
-        manifest = load_participant_manifest(
-            context.s3_client,
-            site=site,
-            participant_id=participant_id,
+        entity_manifest = load_entity_manifest_from_store(
+            context.object_store,
+            group=site,
+            entity_id=participant_id,
             base_prefix=context.merged_base_prefix,
+        )
+        manifest = ParticipantManifest(
+            participant_id=entity_manifest.entity_id,
+            site=entity_manifest.group,
+            metrics=entity_manifest.metrics,
+            updated_at=entity_manifest.updated_at,
+            last_run_id=entity_manifest.last_run_id,
         )
         context.participant_manifests[participant_id] = manifest
         if hasattr(context, "entity_manifests"):
@@ -366,8 +424,8 @@ def ensure_entity_summary_manifest(context: RunContext, entity_id: str) -> Entit
         if not prefix:
             manifests[entity_id] = EntitySummaryManifest(entity_id=entity_id, group=group)
         else:
-            manifest = load_entity_summary_manifest(
-                context.s3_client,
+            manifest = load_entity_summary_manifest_from_store(
+                context.object_store,
                 group=group,
                 entity_id=entity_id,
                 manifest_prefix=prefix,
@@ -405,8 +463,8 @@ def ensure_entity_latest_measurement_manifest(context: RunContext, entity_id: st
                 group=group,
             )
         else:
-            manifest = load_entity_latest_measurement_manifest(
-                context.s3_client,
+            manifest = load_entity_latest_measurement_manifest_from_store(
+                context.object_store,
                 group=group,
                 entity_id=entity_id,
                 manifest_prefix=prefix,
@@ -485,6 +543,9 @@ __all__ = [
     "set_entity_groups",
     "set_cache_refresh_policy",
     "spec_needs_s3_client",
+    "spec_needs_object_store",
+    "object_store_locator_for_spec",
+    "source_root_locator",
     "step_state_bindings",
     "summary_manifests",
     "summary_outputs",
