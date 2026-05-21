@@ -673,6 +673,7 @@ for forbidden_prefix in ("connect_summary", "pandas", "rdflib"):
         code = r"""
 import sys
 import tempfile
+import json
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -826,13 +827,20 @@ with tempfile.TemporaryDirectory() as tmp_dir:
         pipeline_observer=TargetObserver(),
         pipeline_publisher=publisher,
     )
-    result = PublishStep({}).run(context)
+    step = PublishStep({})
+    result = step.run(context)
+    context.metrics = {"publish": {participant_id: {**result, "duration_seconds": 1.0}}}
+    step.after_metrics_recorded(context, result)
     assert result["artifact_files"] == 1, result
     assert result["analysis_files"] == 1, result
     assert result["published_target_files"] == {"analysis": 1, "artifact": 1}, result
     assert publisher.entity_manifests == [(participant_id, "SiteA", True, 1, "artifact")], publisher.entity_manifests
     assert any(destination == "memory://manifests/core-publish-smoke.json" for _, destination in publisher.files), publisher.files
     assert any(destination == "memory://logs/core-publish-smoke/profile_run_artifact.json" for _, destination in publisher.files), publisher.files
+    run_metrics = json.loads((root / "logs" / "metrics.json").read_text(encoding="utf-8"))
+    run_manifest = json.loads((root / "logs" / "manifest.json").read_text(encoding="utf-8"))
+    assert run_metrics["metrics"]["publish"][participant_id]["artifact_files"] == 1, run_metrics
+    assert run_manifest["metrics"]["publish"][participant_id]["artifact_files"] == 1, run_manifest
 
 loaded = sorted(name for name in sys.modules if name.startswith("connect_summary"))
 print("\n".join(loaded))

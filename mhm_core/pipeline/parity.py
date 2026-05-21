@@ -262,13 +262,14 @@ def _normalize_value(
             if text_key in volatile_keys or _normalize_provenance_derived_field(text_key, rel_path, normalization):
                 output[text_key] = "<VOLATILE>"
             else:
-                output[text_key] = _normalize_value(
+                normalized_child = _normalize_value(
                     child,
                     root=root,
                     volatile_keys=volatile_keys,
                     normalization=normalization,
                     rel_path=rel_path,
                 )
+                output[text_key] = _normalize_run_manifest_identity_rows(text_key, normalized_child, rel_path, normalization)
         return output
     if isinstance(value, list):
         return [
@@ -300,6 +301,8 @@ def _drop_provenance_refactor_alias(
         return _is_redundant_labels(mapping.get(key), mapping)
     if key == "locator":
         return _is_redundant_source_locator(mapping.get(key), mapping)
+    if key == "document_type":
+        return _is_redundant_document_type(mapping.get(key), mapping)
     if key == "entity_group_map":
         return mapping.get(key) == {}
     legacy_partner = {
@@ -349,6 +352,43 @@ def _is_redundant_source_locator(value: Any, parent: Mapping[str, Any]) -> bool:
         return False
     expected = f"s3://{bucket}/{str(prefix).strip('/')}"
     return value.rstrip("/") == expected.rstrip("/")
+
+
+def _is_redundant_document_type(value: Any, parent: Mapping[str, Any]) -> bool:
+    if not isinstance(value, str):
+        return False
+    locator = parent.get("locator")
+    if not isinstance(locator, str) or not locator.strip():
+        return False
+    expected = Path(locator).suffix.lstrip(".")
+    return bool(expected) and value == expected
+
+
+def _normalize_run_manifest_identity_rows(
+    key: str,
+    value: Any,
+    rel_path: str,
+    normalization: ParityNormalization,
+) -> Any:
+    if not normalization.provenance_refactor:
+        return value
+    if key not in {"entities", "participants"} or not _is_run_manifest_document(rel_path):
+        return value
+    if not isinstance(value, list) or not all(isinstance(item, Mapping) for item in value):
+        return value
+    return sorted(
+        value,
+        key=lambda item: (
+            str(item.get("group", item.get("site", ""))),
+            str(item.get("entity_id", item.get("participant_id", ""))),
+            json.dumps(item, sort_keys=True, separators=(",", ":")),
+        ),
+    )
+
+
+def _is_run_manifest_document(rel_path: str) -> bool:
+    path = rel_path.replace("\\", "/")
+    return path in {"manifest.json", "logs/manifest.json", "manifests/manifest.json"}
 
 
 def _mapping_value_matches_parent(value: Mapping[str, Any], key: str, parent: Mapping[str, Any]) -> bool:

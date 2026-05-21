@@ -225,6 +225,7 @@ def cmd_run(
                     metrics=metrics,
                     pre_step_state=pre_step_state,
                 )
+                step.after_metrics_recorded(context, metrics)
             if queue_prefix and _should_suspend(context, queue_prefix, last_suspend_probe):
                 return SUSPEND_EXIT_CODE
             last_suspend_probe = time.monotonic()
@@ -246,13 +247,6 @@ def cmd_run(
                 step_index=step_index,
             )
             metrics = _run_step_with_timing(context, step)
-            context.pipeline_observer.after_step(
-                context,
-                step=step,
-                step_index=step_index,
-                metrics=metrics,
-                pre_step_state=pre_step_state,
-            )
             key = "all" if total_batches == 1 else batch_label
             if total_batches == 1:
                 context.metrics[step.name][key] = metrics
@@ -262,6 +256,14 @@ def cmd_run(
                     "participants": list(batch),
                     "metrics": metrics,
                 }
+            context.pipeline_observer.after_step(
+                context,
+                step=step,
+                step_index=step_index,
+                metrics=metrics,
+                pre_step_state=pre_step_state,
+            )
+            step.after_metrics_recorded(context, metrics)
             if (
                 queue_prefix
                 and step.suspend_checkpoint in {"step", "batch"}

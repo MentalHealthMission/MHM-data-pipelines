@@ -80,6 +80,10 @@ class PipelineStep(ABC):
     def run(self, context: RunContext) -> Dict[str, Any]:
         """Execute the step and return step-specific metrics."""
 
+    def after_metrics_recorded(self, context: RunContext, metrics: Dict[str, Any]) -> None:
+        """Run after the runner has stored the step metrics in the run context."""
+        return None
+
     def describe_produced_states(self, context: RunContext) -> list[PipelineStepStateDescriptor]:
         """Declare durable dataset states produced by this step for provenance capture."""
         return []

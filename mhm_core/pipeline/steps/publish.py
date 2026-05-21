@@ -114,9 +114,22 @@ class PublishStep(PipelineStep):
             )
 
         context.logs_dir.mkdir(parents=True, exist_ok=True)
+        return self._build_step_metrics(context, target_stats)
+
+    def after_metrics_recorded(self, context: RunContext, metrics: Dict[str, object]) -> None:
+        del metrics
+        self._publish_run_metadata(context)
+
+    def _publish_run_metadata(self, context: RunContext) -> None:
+        outputs = context.spec.outputs
+        run_id = context.run_id
+        publisher = self._publisher(context)
+        upload_stats = {"logs": PublishResult()}
+
+        context.logs_dir.mkdir(parents=True, exist_ok=True)
         metrics_payload = {"run_id": run_id, "started_at": context.start_time.isoformat() + "Z", "metrics": context.metrics}
         metrics_path = context.logs_dir / "metrics.json"
-        metrics_path.write_text(json.dumps(metrics_payload, indent=2), encoding="utf-8")
+        metrics_path.write_text(json.dumps(metrics_payload, indent=2, sort_keys=True), encoding="utf-8")
         logs_prefix = _format_run_locator(outputs.logs_prefix, run_id=run_id).rstrip("/")
         upload_stats["logs"].merge(
             self._publish_run_target(
@@ -140,25 +153,27 @@ class PublishStep(PipelineStep):
                 context.logger.info("[publish  ] Uploaded merged archive to %s", archive_key)
 
         entity_group_map = getattr(context, "entity_groups", None) or getattr(context, "participant_sites", {})
+        entity_rows = [
+            {"entity_id": eid, "group": group}
+            for eid, group in sorted(entity_group_map.items(), key=lambda item: (str(item[1]), str(item[0])))
+        ]
+        participant_rows = [
+            {"participant_id": row["entity_id"], "site": row["group"]}
+            for row in entity_rows
+        ]
         manifest = {
             "run_id": run_id,
             "started_at": context.start_time.isoformat() + "Z",
             "completed_at": _utc_now_iso(),
             "entity_count": len(entity_group_map),
             "participant_count": len(entity_group_map),
-            "entities": [
-                {"entity_id": eid, "group": group}
-                for eid, group in entity_group_map.items()
-            ],
-            "participants": [
-                {"participant_id": eid, "site": group}
-                for eid, group in entity_group_map.items()
-            ],
+            "entities": entity_rows,
+            "participants": participant_rows,
             "metrics": context.metrics,
         }
         manifest = context.pipeline_observer.run_manifest_payload(context, manifest=manifest)
         manifest_path = context.logs_dir / "manifest.json"
-        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
         manifest_key = _format_run_locator(outputs.manifest_key, run_id=run_id)
         upload_stats["logs"].merge(
             self._publish_run_target(
@@ -190,6 +205,11 @@ class PublishStep(PipelineStep):
         if context.spec.publishing.delete_local_workspace:
             self._cleanup_local(context)
 
+    def _build_step_metrics(
+        self,
+        context: RunContext,
+        target_stats: Dict[str, PublishResult],
+    ) -> Dict[str, object]:
         metrics = {
             "status": "ok",
             "published_target_files": {

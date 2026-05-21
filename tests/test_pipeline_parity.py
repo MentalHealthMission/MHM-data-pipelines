@@ -129,6 +129,46 @@ class PipelineParityHarnessTests(unittest.TestCase):
 
             self.assertTrue(report.equivalent, report.to_dict())
 
+    def test_provenance_refactor_mode_treats_run_manifest_identity_rows_as_sets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old = root / "old" / "manifests"
+            new = root / "new" / "manifests"
+            old.mkdir(parents=True)
+            new.mkdir(parents=True)
+            old_payload = {
+                "participants": [
+                    {"participant_id": "entity-b", "site": "site-b"},
+                    {"participant_id": "entity-a", "site": "site-a"},
+                ],
+                "entities": [
+                    {"entity_id": "entity-b", "group": "site-b"},
+                    {"entity_id": "entity-a", "group": "site-a"},
+                ],
+            }
+            new_payload = {
+                "participants": [
+                    {"participant_id": "entity-a", "site": "site-a"},
+                    {"participant_id": "entity-b", "site": "site-b"},
+                ],
+                "entities": [
+                    {"entity_id": "entity-a", "group": "site-a"},
+                    {"entity_id": "entity-b", "group": "site-b"},
+                ],
+            }
+            (old / "manifest.json").write_text(json.dumps(old_payload), encoding="utf-8")
+            (new / "manifest.json").write_text(json.dumps(new_payload), encoding="utf-8")
+
+            strict = compare_run_directories(root / "old", root / "new")
+            normalized = compare_run_directories(
+                root / "old",
+                root / "new",
+                normalization=ParityNormalization(provenance_refactor=True),
+            )
+
+            self.assertFalse(strict.equivalent)
+            self.assertTrue(normalized.equivalent, normalized.to_dict())
+
     def test_provenance_refactor_mode_accepts_neutral_aliases_and_derived_hashes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -394,6 +434,91 @@ class PipelineParityHarnessTests(unittest.TestCase):
 
             self.assertFalse(report.equivalent)
             self.assertEqual([item.path for item in report.changed], ["logs/provenance/pipeline_spec_manifest.json"])
+
+    def test_provenance_refactor_mode_accepts_derivable_document_type(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old = root / "old" / "logs" / "provenance"
+            new = root / "new" / "logs" / "provenance"
+            old.mkdir(parents=True)
+            new.mkdir(parents=True)
+            old_payload = {
+                "control_documents": [
+                    {
+                        "role": "pipeline_spec_manifest",
+                        "locator": "s3://bucket/path/pipeline_spec_manifest.json",
+                        "document_hash": "same",
+                    }
+                ]
+            }
+            new_payload = {
+                "control_documents": [
+                    {
+                        "role": "pipeline_spec_manifest",
+                        "locator": "s3://bucket/path/pipeline_spec_manifest.json",
+                        "document_hash": "same",
+                        "document_type": "json",
+                    }
+                ]
+            }
+            (old / "operation_event.json").write_text(json.dumps(old_payload), encoding="utf-8")
+            (new / "operation_event.json").write_text(json.dumps(new_payload), encoding="utf-8")
+
+            strict = compare_run_directories(root / "old", root / "new")
+            normalized = compare_run_directories(
+                root / "old",
+                root / "new",
+                normalization=ParityNormalization(provenance_refactor=True),
+            )
+
+            self.assertFalse(strict.equivalent)
+            self.assertTrue(normalized.equivalent, normalized.to_dict())
+
+    def test_provenance_refactor_mode_reports_non_derivable_document_type(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old = root / "old" / "logs" / "provenance"
+            new = root / "new" / "logs" / "provenance"
+            old.mkdir(parents=True)
+            new.mkdir(parents=True)
+            (old / "operation_event.json").write_text(
+                json.dumps(
+                    {
+                        "control_documents": [
+                            {
+                                "role": "pipeline_spec_manifest",
+                                "locator": "s3://bucket/path/pipeline_spec_manifest.json",
+                                "document_hash": "same",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (new / "operation_event.json").write_text(
+                json.dumps(
+                    {
+                        "control_documents": [
+                            {
+                                "role": "pipeline_spec_manifest",
+                                "locator": "s3://bucket/path/pipeline_spec_manifest.json",
+                                "document_hash": "same",
+                                "document_type": "yaml",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            report = compare_run_directories(
+                root / "old",
+                root / "new",
+                normalization=ParityNormalization(provenance_refactor=True),
+            )
+
+            self.assertFalse(report.equivalent)
+            self.assertEqual([item.path for item in report.changed], ["logs/provenance/operation_event.json"])
 
     def test_provenance_refactor_mode_still_reports_semantic_coverage_changes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
