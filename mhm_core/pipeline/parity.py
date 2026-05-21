@@ -95,6 +95,9 @@ class ParityChangedFile:
     old_digest: str
     new_digest: str
     kind: str
+    classification: str = "unresolved"
+    blocking: bool = True
+    reason: str = ""
 
 
 @dataclass
@@ -102,6 +105,7 @@ class PipelineParityReport:
     old_root: str
     new_root: str
     matched: list[str] = field(default_factory=list)
+    matched_count: int = 0
     changed: list[ParityChangedFile] = field(default_factory=list)
     missing_from_new: list[str] = field(default_factory=list)
     missing_from_old: list[str] = field(default_factory=list)
@@ -111,9 +115,24 @@ class PipelineParityReport:
     def equivalent(self) -> bool:
         return not self.changed and not self.missing_from_new and not self.missing_from_old
 
+    @property
+    def blocking_equivalent(self) -> bool:
+        return (
+            not self.missing_from_new
+            and not self.missing_from_old
+            and not any(item.blocking for item in self.changed)
+        )
+
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
+        payload["matched_count"] = self.matched_count
+        payload["changed_count"] = len(self.changed)
+        payload["accepted_changed_count"] = len([item for item in self.changed if not item.blocking])
+        payload["blocking_changed_count"] = len([item for item in self.changed if item.blocking])
+        payload["changed_count_by_classification"] = _changed_count_by_classification(self.changed)
         payload["equivalent"] = self.equivalent
+        payload["strict_equivalent"] = self.equivalent
+        payload["blocking_equivalent"] = self.blocking_equivalent
         return payload
 
 
@@ -124,6 +143,7 @@ def compare_run_directories(
     ignore_patterns: Sequence[str] = DEFAULT_IGNORE_PATTERNS,
     volatile_keys: Iterable[str] = DEFAULT_VOLATILE_KEYS,
     normalization: ParityNormalization | None = None,
+    record_matched_paths: bool = True,
 ) -> PipelineParityReport:
     """Compare two materialized run/output directories."""
 
@@ -161,14 +181,28 @@ def compare_run_directories(
             normalization=normalization,
         )
         if old_digest == new_digest and old_kind == new_kind:
-            report.matched.append(rel_path)
+            report.matched_count += 1
+            if record_matched_paths:
+                report.matched.append(rel_path)
         else:
+            classification, blocking, reason = _classify_changed_file(
+                rel_path,
+                old_file,
+                new_file,
+                old_root=old_path,
+                new_root=new_path,
+                volatile_keys=volatile_key_set,
+                normalization=normalization,
+            )
             report.changed.append(
                 ParityChangedFile(
                     path=rel_path,
                     old_digest=old_digest,
                     new_digest=new_digest,
                     kind=old_kind if old_kind == new_kind else f"{old_kind}->{new_kind}",
+                    classification=classification,
+                    blocking=blocking,
+                    reason=reason,
                 )
             )
 
@@ -199,30 +233,32 @@ def parity_digest(
         body = json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return sha256(body).hexdigest(), "json"
     if path.suffix.lower() == ".jsonl":
-        rows = []
+        digest = sha256()
         for line in path.read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
-            rows.append(
+            normalized_line = json.dumps(
                 _normalize_value(
                     json.loads(line),
                     root=root,
                     volatile_keys=set(volatile_keys),
                     normalization=normalization,
                     rel_path=rel_path,
-                )
+                ),
+                sort_keys=True,
+                separators=(",", ":"),
             )
-        body = json.dumps(rows, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        return sha256(body).hexdigest(), "jsonl"
+            digest.update(normalized_line.encode("utf-8"))
+            digest.update(b"\n")
+        return digest.hexdigest(), "jsonl"
     if ".gz" in suffixes:
-        with gzip.open(path, "rb") as handle:
-            return sha256(handle.read()).hexdigest(), "gzip"
+        return _sha256_gzip_payload(path), "gzip"
     if ".gz" not in suffixes and _looks_like_utf8(path):
         text = path.read_text(encoding="utf-8")
         text = text.replace(str(root), "<RUN_ROOT>")
         text = normalization.normalize_string(text)
         return sha256(text.encode("utf-8")).hexdigest(), "text"
-    return sha256(path.read_bytes()).hexdigest(), "binary"
+    return _sha256_file(path), "binary"
 
 
 def write_report(report: PipelineParityReport, path: str | Path) -> None:
@@ -304,7 +340,7 @@ def _drop_provenance_refactor_alias(
     if key == "document_type":
         return _is_redundant_document_type(mapping.get(key), mapping)
     if key == "entity_group_map":
-        return mapping.get(key) == {}
+        return _is_redundant_entity_group_map(mapping.get(key), mapping)
     legacy_partner = {
         "entity_count": "participant_count",
         "group_count": "site_count",
@@ -362,6 +398,24 @@ def _is_redundant_document_type(value: Any, parent: Mapping[str, Any]) -> bool:
         return False
     expected = Path(locator).suffix.lstrip(".")
     return bool(expected) and value == expected
+
+
+def _is_redundant_entity_group_map(value: Any, parent: Mapping[str, Any]) -> bool:
+    if value == {}:
+        return True
+    if not isinstance(value, Mapping):
+        return False
+    normalized = {str(key): str(child) for key, child in value.items()}
+    site_map = parent.get("site_map")
+    if isinstance(site_map, Mapping):
+        return normalized == {str(key): str(child) for key, child in site_map.items()}
+    entities = parent.get("entities") or parent.get("participants")
+    groups = parent.get("groups") or parent.get("sites")
+    if not isinstance(entities, list) or not isinstance(groups, list):
+        return False
+    entity_set = {str(item) for item in entities}
+    group_set = {str(item) for item in groups}
+    return set(normalized) == entity_set and set(normalized.values()).issubset(group_set)
 
 
 def _normalize_run_manifest_identity_rows(
@@ -436,6 +490,214 @@ def _looks_like_utf8(path: Path) -> bool:
     except UnicodeDecodeError:
         return False
     return True
+
+
+def _classify_changed_file(
+    rel_path: str,
+    old_file: Path,
+    new_file: Path,
+    *,
+    old_root: Path,
+    new_root: Path,
+    volatile_keys: set[str],
+    normalization: ParityNormalization,
+) -> tuple[str, bool, str]:
+    normalized_rel_path = rel_path.replace("\\", "/")
+    if normalized_rel_path in {"logs/metrics.json", "manifests/manifest.json"}:
+        old_payload = _normalized_json_payload(old_file, old_root, volatile_keys, normalization, rel_path)
+        new_payload = _normalized_json_payload(new_file, new_root, volatile_keys, normalization, rel_path)
+        publish_omission = _expected_publish_metric_omission(old_payload, new_payload)
+        if publish_omission:
+            return publish_omission
+        return "unresolved_metadata", True, "run metadata differs outside an accepted correction rule"
+    if normalized_rel_path == "logs/provenance/published_merged_dataset/dataset_manifest.json":
+        old_payload = _normalized_json_payload(old_file, old_root, volatile_keys, normalization, rel_path)
+        new_payload = _normalized_json_payload(new_file, new_root, volatile_keys, normalization, rel_path)
+        if _is_expected_published_dataset_parent_omission(old_payload, new_payload):
+            return (
+                "expected_pre_fix_publish_parent_title_omission",
+                False,
+                "pre-fix publish finalization omitted a different final redaction parent title from each isolated run",
+            )
+        return "unresolved_metadata", True, "published dataset metadata differs outside an accepted correction rule"
+    else:
+        if _is_payload_path(rel_path):
+            return "payload_mismatch", True, "materialized payload differs"
+        if _is_metadata_path(rel_path):
+            return "unresolved_metadata", True, "metadata differs outside an accepted correction rule"
+        return "unresolved", True, "file differs outside an accepted correction rule"
+
+
+def _normalized_json_payload(
+    path: Path,
+    root: Path,
+    volatile_keys: set[str],
+    normalization: ParityNormalization,
+    rel_path: str,
+) -> Any:
+    return _normalize_value(
+        json.loads(path.read_text(encoding="utf-8")),
+        root=root,
+        volatile_keys=volatile_keys,
+        normalization=normalization,
+        rel_path=rel_path,
+    )
+
+
+def _expected_publish_metric_omission(old_payload: Any, new_payload: Any) -> tuple[str, bool, str] | None:
+    old_publish = _metrics_publish(old_payload)
+    new_publish = _metrics_publish(new_payload)
+    if not isinstance(old_publish, Mapping) or not isinstance(new_publish, Mapping):
+        return None
+    old_keys = {str(key) for key in old_publish}
+    new_keys = {str(key) for key in new_publish}
+    missing_from_old = new_keys - old_keys
+    missing_from_new = old_keys - new_keys
+    if not missing_from_old and not missing_from_new:
+        return None
+    if missing_from_old and not missing_from_new:
+        trimmed_new = _remove_metrics_publish_keys(new_payload, missing_from_old)
+        if old_payload == trimmed_new:
+            return (
+                "expected_old_baseline_publish_metadata_omission",
+                False,
+                "old baseline omits publish metrics that the refactored candidate now records after publish finalization",
+            )
+    if missing_from_old and missing_from_new:
+        trimmed_old = _remove_metrics_publish_keys(old_payload, missing_from_new)
+        trimmed_new = _remove_metrics_publish_keys(new_payload, missing_from_old)
+        if trimmed_old == trimmed_new:
+            return (
+                "expected_pre_fix_publish_metadata_omission",
+                False,
+                "pre-fix publish finalization omitted a different final publish entity from each isolated run",
+            )
+    return None
+
+
+def _metrics_publish(payload: Any) -> Any:
+    if not isinstance(payload, Mapping):
+        return None
+    metrics = payload.get("metrics")
+    if not isinstance(metrics, Mapping):
+        return None
+    return metrics.get("publish")
+
+
+def _remove_metrics_publish_keys(payload: Any, keys: set[str]) -> Any:
+    copied = json.loads(json.dumps(payload))
+    publish = copied.get("metrics", {}).get("publish", {})
+    if isinstance(publish, dict):
+        for key in keys:
+            publish.pop(key, None)
+    return copied
+
+
+def _is_expected_published_dataset_parent_omission(old_payload: Any, new_payload: Any) -> bool:
+    if not isinstance(old_payload, Mapping) or not isinstance(new_payload, Mapping):
+        return False
+    old_parents = old_payload.get("parents")
+    new_parents = new_payload.get("parents")
+    if not isinstance(old_parents, list) or not isinstance(new_parents, list):
+        return False
+    old_titles = _redaction_parent_titles(old_parents)
+    new_titles = _redaction_parent_titles(new_parents)
+    old_only = old_titles - new_titles
+    new_only = new_titles - old_titles
+    if not old_only or not new_only:
+        return False
+    affected_entities = _entity_ids_from_redaction_titles(old_only | new_only)
+    trimmed_old = _strip_pre_fix_redaction_parent_metadata(old_payload, old_only, affected_entities)
+    trimmed_new = _strip_pre_fix_redaction_parent_metadata(new_payload, new_only, affected_entities)
+    return _canonicalize_parents(trimmed_old) == _canonicalize_parents(trimmed_new)
+
+
+def _redaction_parent_titles(parents: list[Any]) -> set[str]:
+    titles: set[str] = set()
+    for parent in parents:
+        if not isinstance(parent, Mapping):
+            continue
+        title = parent.get("title")
+        if isinstance(title, str) and title.startswith("Applied redaction rules for "):
+            titles.add(title)
+    return titles
+
+
+def _entity_ids_from_redaction_titles(titles: set[str]) -> set[str]:
+    prefix = "Applied redaction rules for "
+    return {title[len(prefix) :] for title in titles if title.startswith(prefix)}
+
+
+def _strip_pre_fix_redaction_parent_metadata(
+    payload: Any,
+    titles_to_remove: set[str],
+    affected_entities: set[str],
+) -> Any:
+    copied = json.loads(json.dumps(payload))
+    parents = copied.get("parents")
+    if isinstance(parents, list):
+        for parent in parents:
+            if not isinstance(parent, dict):
+                continue
+            title = parent.get("title")
+            locator = parent.get("locator")
+            if isinstance(title, str) and title in titles_to_remove:
+                parent.pop("title", None)
+            haystack = " ".join(str(item) for item in (title, locator) if item)
+            if any(entity_id in haystack for entity_id in affected_entities):
+                parent.pop("dataset_id", None)
+    return copied
+
+
+def _canonicalize_parents(payload: Any) -> Any:
+    copied = json.loads(json.dumps(payload))
+    parents = copied.get("parents")
+    if isinstance(parents, list):
+        copied["parents"] = sorted(
+            parents,
+            key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")),
+        )
+    return copied
+
+
+def _is_payload_path(rel_path: str) -> bool:
+    path = rel_path.replace("\\", "/")
+    return (
+        "/summary-data/" in f"/{path}/"
+        or "/merged-data/" in f"/{path}/"
+        or path.startswith("summary-data/")
+        or path.startswith("merged-data/")
+        or path.endswith(".csv")
+        or path.endswith(".csv.gz")
+    )
+
+
+def _is_metadata_path(rel_path: str) -> bool:
+    path = rel_path.replace("\\", "/")
+    return path.endswith((".json", ".jsonl")) or "/logs/" in f"/{path}/" or "/manifests/" in f"/{path}/"
+
+
+def _changed_count_by_classification(changes: Sequence[ParityChangedFile]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in changes:
+        counts[item.classification] = counts.get(item.classification, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def _sha256_gzip_payload(path: Path) -> str:
+    digest = sha256()
+    with gzip.open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _sha256_file(path: Path) -> str:
+    digest = sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 __all__ = [

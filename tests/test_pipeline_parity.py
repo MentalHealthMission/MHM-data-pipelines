@@ -71,6 +71,142 @@ class PipelineParityHarnessTests(unittest.TestCase):
 
             self.assertFalse(report.equivalent)
             self.assertEqual([item.path for item in report.changed], ["summary.csv"])
+            self.assertEqual(report.changed[0].classification, "payload_mismatch")
+            self.assertTrue(report.changed[0].blocking)
+
+    def test_expected_old_baseline_publish_metadata_omission_is_non_blocking(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old = root / "old" / "logs"
+            new = root / "new" / "logs"
+            old.mkdir(parents=True)
+            new.mkdir(parents=True)
+            old_payload = {
+                "metrics": {
+                    "download": {"entity-a": {"status": "ok"}, "entity-b": {"status": "ok"}},
+                    "publish": {"entity-a": {"status": "ok", "duration_seconds": 1.0}},
+                }
+            }
+            new_payload = {
+                "metrics": {
+                    "download": {"entity-a": {"status": "ok"}, "entity-b": {"status": "ok"}},
+                    "publish": {
+                        "entity-a": {"status": "ok", "duration_seconds": 2.0},
+                        "entity-b": {"status": "ok", "duration_seconds": 3.0},
+                    },
+                }
+            }
+            (old / "metrics.json").write_text(json.dumps(old_payload), encoding="utf-8")
+            (new / "metrics.json").write_text(json.dumps(new_payload), encoding="utf-8")
+
+            report = compare_run_directories(root / "old", root / "new")
+
+            self.assertFalse(report.equivalent)
+            self.assertTrue(report.blocking_equivalent, report.to_dict())
+            self.assertEqual(
+                report.changed[0].classification,
+                "expected_old_baseline_publish_metadata_omission",
+            )
+            self.assertFalse(report.changed[0].blocking)
+
+    def test_non_omission_publish_metadata_change_remains_blocking(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old = root / "old" / "logs"
+            new = root / "new" / "logs"
+            old.mkdir(parents=True)
+            new.mkdir(parents=True)
+            old_payload = {"metrics": {"publish": {"entity-a": {"status": "ok", "files": 1}}}}
+            new_payload = {"metrics": {"publish": {"entity-a": {"status": "ok", "files": 2}}}}
+            (old / "metrics.json").write_text(json.dumps(old_payload), encoding="utf-8")
+            (new / "metrics.json").write_text(json.dumps(new_payload), encoding="utf-8")
+
+            report = compare_run_directories(root / "old", root / "new")
+
+            self.assertFalse(report.blocking_equivalent)
+            self.assertEqual(report.changed[0].classification, "unresolved_metadata")
+            self.assertTrue(report.changed[0].blocking)
+
+    def test_pre_fix_publish_metadata_omission_on_both_sides_is_non_blocking(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old = root / "old" / "logs"
+            new = root / "new" / "logs"
+            old.mkdir(parents=True)
+            new.mkdir(parents=True)
+            old_payload = {
+                "metrics": {
+                    "summary": {
+                        "entity-a": {"status": "ok"},
+                        "entity-b": {"status": "ok"},
+                        "entity-c": {"status": "ok"},
+                    },
+                    "publish": {
+                        "entity-a": {"status": "ok", "duration_seconds": 1.0},
+                        "entity-b": {"status": "ok", "duration_seconds": 2.0},
+                    },
+                }
+            }
+            new_payload = {
+                "metrics": {
+                    "summary": {
+                        "entity-a": {"status": "ok"},
+                        "entity-b": {"status": "ok"},
+                        "entity-c": {"status": "ok"},
+                    },
+                    "publish": {
+                        "entity-a": {"status": "ok", "duration_seconds": 3.0},
+                        "entity-c": {"status": "ok", "duration_seconds": 4.0},
+                    },
+                }
+            }
+            (old / "metrics.json").write_text(json.dumps(old_payload), encoding="utf-8")
+            (new / "metrics.json").write_text(json.dumps(new_payload), encoding="utf-8")
+
+            report = compare_run_directories(root / "old", root / "new")
+
+            self.assertFalse(report.equivalent)
+            self.assertTrue(report.blocking_equivalent, report.to_dict())
+            self.assertEqual(report.changed[0].classification, "expected_pre_fix_publish_metadata_omission")
+
+    def test_pre_fix_published_dataset_parent_title_omission_is_non_blocking(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old = root / "old" / "logs" / "provenance" / "published_merged_dataset"
+            new = root / "new" / "logs" / "provenance" / "published_merged_dataset"
+            old.mkdir(parents=True)
+            new.mkdir(parents=True)
+            old_payload = {
+                "dataset_kind": "published_merged_dataset",
+                "parents": [
+                    {"locator": "merged-entity-a", "dataset_id": "same-a"},
+                    {"locator": "merged-entity-b", "title": "Applied redaction rules for entity-b", "dataset_id": "old-b"},
+                    {"locator": "merged-entity-c"},
+                ],
+            }
+            new_payload = {
+                "dataset_kind": "published_merged_dataset",
+                "parents": [
+                    {"locator": "merged-entity-a", "dataset_id": "same-a"},
+                    {"locator": "merged-entity-b"},
+                    {"locator": "merged-entity-c", "title": "Applied redaction rules for entity-c", "dataset_id": "new-c"},
+                ],
+            }
+            (old / "dataset_manifest.json").write_text(json.dumps(old_payload), encoding="utf-8")
+            (new / "dataset_manifest.json").write_text(json.dumps(new_payload), encoding="utf-8")
+
+            report = compare_run_directories(
+                root / "old",
+                root / "new",
+                normalization=ParityNormalization(provenance_refactor=True),
+            )
+
+            self.assertFalse(report.equivalent)
+            self.assertTrue(report.blocking_equivalent, report.to_dict())
+            self.assertEqual(
+                report.changed[0].classification,
+                "expected_pre_fix_publish_parent_title_omission",
+            )
 
     def test_normalize_pairs_accept_intentional_isolation_values(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -395,6 +531,81 @@ class PipelineParityHarnessTests(unittest.TestCase):
 
             self.assertFalse(strict.equivalent)
             self.assertTrue(normalized.equivalent, normalized.to_dict())
+
+    def test_provenance_refactor_mode_accepts_entity_group_map_matching_site_map(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old = root / "old" / "logs" / "provenance"
+            new = root / "new" / "logs" / "provenance"
+            old.mkdir(parents=True)
+            new.mkdir(parents=True)
+            old_payload = {
+                "manifest_type": "pipeline_spec_manifest",
+                "source": {
+                    "sites": ["test"],
+                    "participants": ["entity-1"],
+                    "site_map": {"entity-1": "test"},
+                },
+            }
+            new_payload = {
+                "manifest_type": "pipeline_spec_manifest",
+                "source": {
+                    "sites": ["test"],
+                    "groups": ["test"],
+                    "participants": ["entity-1"],
+                    "entities": ["entity-1"],
+                    "site_map": {"entity-1": "test"},
+                    "entity_group_map": {"entity-1": "test"},
+                },
+            }
+            (old / "pipeline_spec_manifest.json").write_text(json.dumps(old_payload), encoding="utf-8")
+            (new / "pipeline_spec_manifest.json").write_text(json.dumps(new_payload), encoding="utf-8")
+
+            normalized = compare_run_directories(
+                root / "old",
+                root / "new",
+                normalization=ParityNormalization(provenance_refactor=True),
+            )
+
+            self.assertTrue(normalized.equivalent, normalized.to_dict())
+
+    def test_provenance_refactor_mode_reports_non_redundant_entity_group_map(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old = root / "old" / "logs" / "provenance"
+            new = root / "new" / "logs" / "provenance"
+            old.mkdir(parents=True)
+            new.mkdir(parents=True)
+            old_payload = {
+                "manifest_type": "pipeline_spec_manifest",
+                "source": {
+                    "sites": ["test"],
+                    "participants": ["entity-1"],
+                    "site_map": {"entity-1": "test"},
+                },
+            }
+            new_payload = {
+                "manifest_type": "pipeline_spec_manifest",
+                "source": {
+                    "sites": ["test"],
+                    "groups": ["test"],
+                    "participants": ["entity-1"],
+                    "entities": ["entity-1"],
+                    "site_map": {"entity-1": "test"},
+                    "entity_group_map": {"entity-1": "other"},
+                },
+            }
+            (old / "pipeline_spec_manifest.json").write_text(json.dumps(old_payload), encoding="utf-8")
+            (new / "pipeline_spec_manifest.json").write_text(json.dumps(new_payload), encoding="utf-8")
+
+            report = compare_run_directories(
+                root / "old",
+                root / "new",
+                normalization=ParityNormalization(provenance_refactor=True),
+            )
+
+            self.assertFalse(report.equivalent)
+            self.assertEqual([item.path for item in report.changed], ["logs/provenance/pipeline_spec_manifest.json"])
 
     def test_provenance_refactor_mode_reports_non_redundant_source_locator(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
