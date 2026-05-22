@@ -1,20 +1,20 @@
 # MHM Pipelines
 
-Reusable Python pipeline runtime for Mental Health Mission data processing.
+Python tools for defining and running file-backed data pipelines.
 
-This repository contains the reusable pipeline kernel, profile/plugin contracts,
-object-store and queue abstractions, publishing contracts, and parity digest
-helpers. It is intended to support project-specific pipeline profiles without
-baking those profiles into the core runtime.
+Use this package to load pipeline specifications, execute pipeline steps,
+record run manifests, publish outputs, and compare runs without inspecting
+participant-level data.
 
-## What This Package Owns
+## What You Can Do
 
-- pipeline specification loading and validation
-- execution contexts, run manifests, and refresh plans
-- object-store and queue interfaces
-- publish targets and observer hooks
-- parity/digest helpers for no-data regression checks
-- a small "hello world" pipeline used as a neutral contract test
+- load and validate pipeline specifications
+- build execution contexts and refresh plans
+- read and write run manifests
+- plug in object-store and queue backends
+- publish outputs through explicit targets and observer hooks
+- generate parity digests for no-data regression checks
+- run the included hello-world pipeline example
 
 ## Install
 
@@ -33,7 +33,7 @@ pip install -e ".[object-store]"
 
 ## Development
 
-Run the lightweight checks with:
+Run the lightweight checks:
 
 ```sh
 python scripts/check_minimal_pipeline_kernel.py
