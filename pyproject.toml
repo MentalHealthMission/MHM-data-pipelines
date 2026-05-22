@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mhm-pipelines"
+version = "0.1.0"
+description = "Generic Mental Health Mission pipeline runtime"
+requires-python = ">=3.10"
+dependencies = [
+  "PyYAML==6.0.2",
+]
+
+[project.optional-dependencies]
+object-store = [
+  "boto3==1.35.45",
+  "botocore==1.35.45",
+  "jmespath==1.0.1",
+  "s3transfer==0.10.3",
+  "six==1.16.0",
+  "urllib3==1.26.19",
+]
+
+[tool.setuptools.packages.find]
+include = [
+  "mhm_core.pipeline*",
+  "mhm_core.profiles.base*",
+  "mhm_core.profiles.minimal*",
+]
+namespaces = true
+
