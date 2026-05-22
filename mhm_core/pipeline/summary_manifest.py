@@ -24,13 +24,13 @@ class EntitySummaryManifest:
 
     @property
     def participant_id(self) -> str:
-        """Compatibility alias for existing CONNECT callers."""
+        """Compatibility alias for participant/site callers."""
 
         return self.entity_id
 
     @property
     def site(self) -> str:
-        """Compatibility alias for existing CONNECT callers."""
+        """Compatibility alias for participant/site callers."""
 
         return self.group
 

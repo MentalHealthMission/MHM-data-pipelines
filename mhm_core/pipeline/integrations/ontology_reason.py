@@ -290,7 +290,7 @@ def _parse_date_token(value: Any) -> str:
     text = str(value or "").strip()
     if not text:
         return ""
-    # Some CONNECT metrics store epoch seconds in value.time/value.endTime.
+    # Some metric streams store epoch seconds in value.time/value.endTime.
     try:
         ts = float(text)
         if ts > 10_000_000:  # guard against small non-epoch numeric values

@@ -198,7 +198,7 @@ class PipelineParityHarnessTests(unittest.TestCase):
             report = compare_run_directories(
                 root / "old",
                 root / "new",
-                normalization=ParityNormalization(provenance_refactor=True),
+                normalization=ParityNormalization(provenance_alias_normalization=True),
             )
 
             self.assertFalse(report.equivalent)
@@ -247,11 +247,11 @@ class PipelineParityHarnessTests(unittest.TestCase):
             old.mkdir()
             new.mkdir()
             (old / "manifest.json").write_text(
-                json.dumps({"script": "/home/ubuntu/connect-summary/connect_summary/merge-data.py"}),
+                json.dumps({"script": "/opt/mhm/pipeline/connect_summary/merge-data.py"}),
                 encoding="utf-8",
             )
             (new / "manifest.json").write_text(
-                json.dumps({"script": "/home/ubuntu/connect-summary-refactor-parity/connect_summary/merge-data.py"}),
+                json.dumps({"script": "/opt/mhm/pipeline-candidate/connect_summary/merge-data.py"}),
                 encoding="utf-8",
             )
 
@@ -259,13 +259,13 @@ class PipelineParityHarnessTests(unittest.TestCase):
                 old,
                 new,
                 normalization=ParityNormalization.from_pairs(
-                    [("/home/ubuntu/connect-summary", "/home/ubuntu/connect-summary-refactor-parity")]
+                    [("/opt/mhm/pipeline", "/opt/mhm/pipeline-candidate")]
                 ),
             )
 
             self.assertTrue(report.equivalent, report.to_dict())
 
-    def test_provenance_refactor_mode_treats_run_manifest_identity_rows_as_sets(self) -> None:
+    def test_provenance_alias_normalization_mode_treats_run_manifest_identity_rows_as_sets(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             old = root / "old" / "manifests"
@@ -299,13 +299,13 @@ class PipelineParityHarnessTests(unittest.TestCase):
             normalized = compare_run_directories(
                 root / "old",
                 root / "new",
-                normalization=ParityNormalization(provenance_refactor=True),
+                normalization=ParityNormalization(provenance_alias_normalization=True),
             )
 
             self.assertFalse(strict.equivalent)
             self.assertTrue(normalized.equivalent, normalized.to_dict())
 
-    def test_provenance_refactor_mode_accepts_neutral_aliases_and_derived_hashes(self) -> None:
+    def test_provenance_alias_normalization_mode_accepts_neutral_aliases_and_derived_hashes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             old = root / "old" / "logs" / "provenance" / "step_states" / "state" / "01-download"
@@ -348,13 +348,13 @@ class PipelineParityHarnessTests(unittest.TestCase):
             normalized = compare_run_directories(
                 root / "old",
                 root / "new",
-                normalization=ParityNormalization(provenance_refactor=True),
+                normalization=ParityNormalization(provenance_alias_normalization=True),
             )
 
             self.assertFalse(strict.equivalent)
             self.assertTrue(normalized.equivalent, normalized.to_dict())
 
-    def test_provenance_refactor_mode_accepts_redundant_inventory_coordinates_and_labels(self) -> None:
+    def test_provenance_alias_normalization_mode_accepts_redundant_inventory_coordinates_and_labels(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             old = root / "old" / "logs" / "provenance"
@@ -414,14 +414,14 @@ class PipelineParityHarnessTests(unittest.TestCase):
                 root / "new",
                 normalization=ParityNormalization.from_pairs(
                     [("/old/root", "/new/root")],
-                    provenance_refactor=True,
+                    provenance_alias_normalization=True,
                 ),
             )
 
             self.assertFalse(strict.equivalent)
             self.assertTrue(normalized.equivalent, normalized.to_dict())
 
-    def test_provenance_refactor_mode_reports_non_redundant_inventory_labels(self) -> None:
+    def test_provenance_alias_normalization_mode_reports_non_redundant_inventory_labels(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             old = root / "old" / "logs" / "provenance"
@@ -460,13 +460,13 @@ class PipelineParityHarnessTests(unittest.TestCase):
             report = compare_run_directories(
                 root / "old",
                 root / "new",
-                normalization=ParityNormalization(provenance_refactor=True),
+                normalization=ParityNormalization(provenance_alias_normalization=True),
             )
 
             self.assertFalse(report.equivalent)
             self.assertEqual([item.path for item in report.changed], ["logs/provenance/artifact_inventory.jsonl"])
 
-    def test_provenance_refactor_mode_accepts_redundant_source_locator_metadata(self) -> None:
+    def test_provenance_alias_normalization_mode_accepts_redundant_source_locator_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             old = root / "old" / "logs" / "provenance"
@@ -526,13 +526,13 @@ class PipelineParityHarnessTests(unittest.TestCase):
             normalized = compare_run_directories(
                 root / "old",
                 root / "new",
-                normalization=ParityNormalization(provenance_refactor=True),
+                normalization=ParityNormalization(provenance_alias_normalization=True),
             )
 
             self.assertFalse(strict.equivalent)
             self.assertTrue(normalized.equivalent, normalized.to_dict())
 
-    def test_provenance_refactor_mode_accepts_entity_group_map_matching_site_map(self) -> None:
+    def test_provenance_alias_normalization_mode_accepts_entity_group_map_matching_site_map(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             old = root / "old" / "logs" / "provenance"
@@ -564,12 +564,12 @@ class PipelineParityHarnessTests(unittest.TestCase):
             normalized = compare_run_directories(
                 root / "old",
                 root / "new",
-                normalization=ParityNormalization(provenance_refactor=True),
+                normalization=ParityNormalization(provenance_alias_normalization=True),
             )
 
             self.assertTrue(normalized.equivalent, normalized.to_dict())
 
-    def test_provenance_refactor_mode_reports_non_redundant_entity_group_map(self) -> None:
+    def test_provenance_alias_normalization_mode_reports_non_redundant_entity_group_map(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             old = root / "old" / "logs" / "provenance"
@@ -601,13 +601,13 @@ class PipelineParityHarnessTests(unittest.TestCase):
             report = compare_run_directories(
                 root / "old",
                 root / "new",
-                normalization=ParityNormalization(provenance_refactor=True),
+                normalization=ParityNormalization(provenance_alias_normalization=True),
             )
 
             self.assertFalse(report.equivalent)
             self.assertEqual([item.path for item in report.changed], ["logs/provenance/pipeline_spec_manifest.json"])
 
-    def test_provenance_refactor_mode_reports_non_redundant_source_locator(self) -> None:
+    def test_provenance_alias_normalization_mode_reports_non_redundant_source_locator(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             old = root / "old" / "logs" / "provenance"
@@ -640,13 +640,13 @@ class PipelineParityHarnessTests(unittest.TestCase):
             report = compare_run_directories(
                 root / "old",
                 root / "new",
-                normalization=ParityNormalization(provenance_refactor=True),
+                normalization=ParityNormalization(provenance_alias_normalization=True),
             )
 
             self.assertFalse(report.equivalent)
             self.assertEqual([item.path for item in report.changed], ["logs/provenance/pipeline_spec_manifest.json"])
 
-    def test_provenance_refactor_mode_accepts_derivable_document_type(self) -> None:
+    def test_provenance_alias_normalization_mode_accepts_derivable_document_type(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             old = root / "old" / "logs" / "provenance"
@@ -679,13 +679,13 @@ class PipelineParityHarnessTests(unittest.TestCase):
             normalized = compare_run_directories(
                 root / "old",
                 root / "new",
-                normalization=ParityNormalization(provenance_refactor=True),
+                normalization=ParityNormalization(provenance_alias_normalization=True),
             )
 
             self.assertFalse(strict.equivalent)
             self.assertTrue(normalized.equivalent, normalized.to_dict())
 
-    def test_provenance_refactor_mode_reports_non_derivable_document_type(self) -> None:
+    def test_provenance_alias_normalization_mode_reports_non_derivable_document_type(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             old = root / "old" / "logs" / "provenance"
@@ -725,13 +725,13 @@ class PipelineParityHarnessTests(unittest.TestCase):
             report = compare_run_directories(
                 root / "old",
                 root / "new",
-                normalization=ParityNormalization(provenance_refactor=True),
+                normalization=ParityNormalization(provenance_alias_normalization=True),
             )
 
             self.assertFalse(report.equivalent)
             self.assertEqual([item.path for item in report.changed], ["logs/provenance/operation_event.json"])
 
-    def test_provenance_refactor_mode_still_reports_semantic_coverage_changes(self) -> None:
+    def test_provenance_alias_normalization_mode_still_reports_semantic_coverage_changes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             old = root / "old" / "logs" / "provenance"
@@ -772,7 +772,7 @@ class PipelineParityHarnessTests(unittest.TestCase):
             report = compare_run_directories(
                 root / "old",
                 root / "new",
-                normalization=ParityNormalization(provenance_refactor=True),
+                normalization=ParityNormalization(provenance_alias_normalization=True),
             )
 
             self.assertFalse(report.equivalent)
@@ -836,7 +836,7 @@ class PipelineParityHarnessTests(unittest.TestCase):
                     str(new),
                     "--normalize-pair",
                     "s3://bucket/old/=s3://bucket/new/",
-                    "--provenance-refactor-normalization",
+                    "--provenance-alias-normalization",
                 ],
                 check=False,
                 capture_output=True,

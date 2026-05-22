@@ -54,13 +54,13 @@ class EntityManifest:
 
     @property
     def participant_id(self) -> str:
-        """Compatibility alias for existing CONNECT callers."""
+        """Compatibility alias for participant/site callers."""
 
         return self.entity_id
 
     @property
     def site(self) -> str:
-        """Compatibility alias for existing CONNECT callers."""
+        """Compatibility alias for participant/site callers."""
 
         return self.group
 
@@ -68,7 +68,7 @@ class EntityManifest:
         return {
             "entity_id": self.entity_id,
             "group": self.group,
-            # Compatibility fields retained for current CONNECT manifests.
+            # Compatibility fields retained for persisted participant/site manifests.
             "participant_id": self.entity_id,
             "site": self.group,
             "metrics": {metric: watermark.to_dict() for metric, watermark in self.metrics.items()},
@@ -93,7 +93,7 @@ class EntityManifest:
 
 
 class ParticipantManifest(EntityManifest):
-    """Compatibility manifest constructor using CONNECT participant/site names."""
+    """Compatibility manifest constructor using participant/site names."""
 
     def __init__(
         self,
@@ -137,7 +137,7 @@ def entity_manifest_object_key(group: str, entity_id: str, *, base_prefix: str) 
 
 
 def manifest_s3_key(site: str, participant_id: str, *, base_prefix: str) -> str:
-    """Compatibility wrapper for the CONNECT participant/site key layout."""
+    """Compatibility wrapper for the participant/site key layout."""
 
     return entity_manifest_object_key(site, participant_id, base_prefix=base_prefix)
 

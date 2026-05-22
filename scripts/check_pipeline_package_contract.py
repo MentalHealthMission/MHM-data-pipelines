@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check the rehearsed MHM pipeline package import contract."""
+"""Check the MHM pipeline package import contract."""
 
 from __future__ import annotations
 

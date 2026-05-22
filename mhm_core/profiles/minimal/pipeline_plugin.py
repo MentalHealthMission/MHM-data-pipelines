@@ -1,8 +1,8 @@
 """Minimal pipeline profile registrations.
 
-This profile is an extraction-rehearsal surface for the smallest useful
-pipeline kernel. It deliberately excludes derived-feature, ontology, CONNECT,
-and integration modules.
+This profile is the smallest supported pipeline kernel. It deliberately
+excludes derived-feature, ontology, application-profile, and integration
+modules.
 """
 
 from __future__ import annotations

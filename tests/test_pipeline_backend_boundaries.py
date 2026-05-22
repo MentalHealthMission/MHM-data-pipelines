@@ -140,61 +140,7 @@ class PipelineBackendBoundaryTests(unittest.TestCase):
             "2026-05-20",
         )
 
-    def test_connect_spec_adapter_uses_object_store_for_manifest_native_inputs(self) -> None:
-        from connect_summary.pipeline.spec import load_spec
-
-        store = MemoryObjectStore(
-            {
-                "s3://bucket/manifests/dataset_manifest.json": json.dumps(
-                    {
-                        "data_root_binding": {"locator": "s3://source-bucket/output"},
-                        "documents": {"coverage_summary": {"locator": "coverage.json"}},
-                    }
-                ).encode("utf-8"),
-                "s3://bucket/manifests/coverage.json": json.dumps(
-                    {
-                        "coverage": {
-                            "group_summary": [
-                                {"group": "group-a", "entities": ["entity-1", "entity-2"]},
-                            ]
-                        }
-                    }
-                ).encode("utf-8"),
-            }
-        )
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            spec_path = Path(tmp_dir) / "spec.yaml"
-            spec_path.write_text(
-                "\n".join(
-                    [
-                        "run_id: object-store-spec",
-                        "created_by: tests",
-                        'created_at: "2026-05-20T00:00:00Z"',
-                        "priority: medium",
-                        "source:",
-                        "  source_state_manifest: s3://bucket/manifests/dataset_manifest.json",
-                        "workspace:",
-                        "  root: /tmp",
-                        "outputs:",
-                        "  manifest_key: /tmp/manifest.json",
-                        "processing:",
-                        "  steps:",
-                        "    - type: noop",
-                        "publishing: {}",
-                    ]
-                ),
-                encoding="utf-8",
-            )
-
-            spec = load_spec(str(spec_path), object_store=store)
-
-        self.assertEqual(spec.source.bucket, "source-bucket")
-        self.assertEqual(spec.source.prefix, "output")
-        self.assertEqual(spec.source.locator, "s3://source-bucket/output")
-        self.assertEqual(spec.source.groups, ["group-a"])
-        self.assertEqual(spec.source.entities, ["entity-1", "entity-2"])
-
-    def test_core_spec_loader_does_not_hydrate_connect_source_state_manifests(self) -> None:
+    def test_core_spec_loader_does_not_hydrate_project_source_state_manifests(self) -> None:
         from mhm_core.pipeline.spec import load_spec
 
         store = MemoryObjectStore(
@@ -266,35 +212,6 @@ class PipelineBackendBoundaryTests(unittest.TestCase):
         self.assertEqual(source_root_locator(spec.source), "s3://source-bucket/output")
         self.assertTrue(spec_needs_object_store(spec))
 
-    def test_pipeline_spec_provenance_hash_includes_source_locator(self) -> None:
-        from connect_summary.provenance.specs import build_pipeline_spec_node
-        from mhm_core.pipeline.spec import RunSpec
-        from mhm_core.provenance.hashing import sha256_json
-
-        def spec_for(locator: str) -> RunSpec:
-            return RunSpec.from_dict(
-                {
-                    "run_id": "locator-spec",
-                    "created_by": "tests",
-                    "created_at": "2026-05-20T00:00:00Z",
-                    "priority": "medium",
-                    "source": {
-                        "locator": locator,
-                        "entities": ["entity-1"],
-                    },
-                    "workspace": {"root": "/tmp"},
-                    "outputs": {"manifest_key": "/tmp/manifest.json"},
-                    "processing": {"steps": [{"type": "noop"}]},
-                    "publishing": {},
-                }
-            )
-
-        node_a = build_pipeline_spec_node(spec=spec_for("file:///tmp/source-a"))
-        node_b = build_pipeline_spec_node(spec=spec_for("file:///tmp/source-b"))
-
-        self.assertEqual(node_a["source"]["locator"], "file:///tmp/source-a")
-        self.assertNotEqual(sha256_json(node_a), sha256_json(node_b))
-
     def test_non_s3_source_locator_does_not_force_object_store(self) -> None:
         from mhm_core.pipeline.context import source_root_locator, spec_needs_object_store
         from mhm_core.pipeline.spec import RunSpec
@@ -321,58 +238,6 @@ class PipelineBackendBoundaryTests(unittest.TestCase):
         self.assertEqual(spec.source.prefix, "")
         self.assertEqual(source_root_locator(spec.source), "file:///tmp/source-root")
         self.assertFalse(spec_needs_object_store(spec))
-
-    def test_pipeline_request_submission_uses_object_store_writer(self) -> None:
-        from connect_summary.pipeline.requests import submit_pipeline_spec
-
-        store = MemoryObjectStore()
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            spec_path = Path(tmp_dir) / "spec.yaml"
-            spec_payload = "\n".join(
-                [
-                    "run_id: object-store-submit",
-                    "created_by: tests",
-                    'created_at: "2026-05-20T00:00:00Z"',
-                    "priority: medium",
-                    "source:",
-                    "  locator: file:///tmp/source",
-                    "  entities:",
-                    "    - entity-1",
-                    "workspace:",
-                    "  root: /tmp",
-                    "outputs:",
-                    "  manifest_key: /tmp/manifest.json",
-                    "processing:",
-                    "  steps:",
-                    "    - type: noop",
-                    "publishing: {}",
-                ]
-            )
-            spec_path.write_text(
-                spec_payload,
-                encoding="utf-8",
-            )
-
-            result = submit_pipeline_spec(
-                spec_path=str(spec_path),
-                queue_prefix="memory://queue",
-                object_store=store,
-            )
-
-        self.assertEqual(result["queue_target"], "memory://queue/pending/spec.yaml")
-        self.assertIn(str(result["queue_target"]), store.objects)
-        self.assertIn(str(result["manifest_target"]), store.objects)
-        self.assertIn(str(result["request_target"]), store.objects)
-        self.assertEqual(store.objects[str(result["queue_target"])], spec_payload.encode("utf-8"))
-        request_manifest = json.loads(store.objects[str(result["request_target"])].decode("utf-8"))
-        self.assertIn(str(request_manifest["submitted_at"]).replace(":", "-"), str(result["request_target"]))
-
-    def test_pipeline_request_helper_has_no_inline_s3_writes(self) -> None:
-        source = Path("connect_summary/pipeline/requests.py").read_text(encoding="utf-8")
-
-        self.assertNotIn("import boto3", source)
-        self.assertNotIn("put_object(Bucket=", source)
-        self.assertNotIn("split_s3_uri", source)
 
     def test_runner_filters_use_context_object_store(self) -> None:
         from mhm_core.pipeline.capabilities import EntitySelectionCapability

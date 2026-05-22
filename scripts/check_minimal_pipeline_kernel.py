@@ -20,9 +20,9 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as tmp_dir:
         spec = RunSpec.from_dict(
             {
-                "run_id": "minimal-package-rehearsal",
+                "run_id": "minimal-package-check",
                 "profile": "minimal",
-                "created_by": "refactor",
+                "created_by": "mhm-minimal-check",
                 "created_at": "2026-05-18T00:00:00Z",
                 "priority": "medium",
                 "source": {
@@ -30,7 +30,7 @@ def main() -> int:
                     "groups": ["group-a"],
                     "entity_group_map": {"entity-alpha": "group-a"},
                 },
-                "workspace": {"root": tmp_dir, "run_subdir": "minimal-package-rehearsal/{run_id}"},
+                "workspace": {"root": tmp_dir, "run_subdir": "minimal-package-check/{run_id}"},
                 "outputs": {
                     "manifest_key": "memory://manifests/{run_id}.json",
                     "logs_prefix": "memory://logs/{run_id}/",

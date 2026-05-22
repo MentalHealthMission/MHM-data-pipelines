@@ -80,7 +80,7 @@ spec = RunSpec.from_dict(
         },
         "processing": {
             "steps": [
-                {"type": "hello.collect", "label": "package rehearsal"},
+                {"type": "hello.collect", "label": "package smoke"},
                 {"type": "hello.render"},
                 {"type": "publish"},
             ]

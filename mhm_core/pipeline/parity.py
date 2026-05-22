@@ -1,9 +1,7 @@
 """Production-spec parity comparison helpers.
 
-The refactor parity invariant is that an unchanged CONNECT production spec can
-run through the current CONNECT entrypoint and the refactored implementation
-with equivalent materialized outputs. This module compares two already
-materialized run/output directories and normalizes known volatile metadata.
+Compare baseline and candidate run directories while normalizing configured
+volatile metadata and accepted schema aliases.
 """
 
 from __future__ import annotations
@@ -59,14 +57,14 @@ class ParityNormalization:
     """Explicit optional normalization for old/new parity comparisons."""
 
     value_replacements: tuple[tuple[str, str], ...] = ()
-    provenance_refactor: bool = False
+    provenance_alias_normalization: bool = False
 
     @classmethod
     def from_pairs(
         cls,
         pairs: Sequence[tuple[str, str]] = (),
         *,
-        provenance_refactor: bool = False,
+        provenance_alias_normalization: bool = False,
     ) -> "ParityNormalization":
         replacements: list[tuple[str, str]] = []
         for index, (old_value, new_value) in enumerate(pairs, start=1):
@@ -75,7 +73,7 @@ class ParityNormalization:
                 replacements.append((old_value, placeholder))
             if new_value and new_value != old_value:
                 replacements.append((new_value, placeholder))
-        return cls(value_replacements=tuple(replacements), provenance_refactor=provenance_refactor)
+        return cls(value_replacements=tuple(replacements), provenance_alias_normalization=provenance_alias_normalization)
 
     def normalize_string(self, value: str) -> str:
         normalized = value
@@ -293,7 +291,7 @@ def _normalize_value(
         output: dict[str, Any] = {}
         for key, child in sorted(value.items(), key=lambda item: str(item[0])):
             text_key = str(key)
-            if _drop_provenance_refactor_alias(text_key, value, normalization):
+            if _drop_redundant_provenance_alias(text_key, value, normalization):
                 continue
             if text_key in volatile_keys or _normalize_provenance_derived_field(text_key, rel_path, normalization):
                 output[text_key] = "<VOLATILE>"
@@ -324,12 +322,12 @@ def _normalize_value(
     return value
 
 
-def _drop_provenance_refactor_alias(
+def _drop_redundant_provenance_alias(
     key: str,
     mapping: Mapping[str, Any],
     normalization: ParityNormalization,
 ) -> bool:
-    if not normalization.provenance_refactor:
+    if not normalization.provenance_alias_normalization:
         return False
     if key == "coordinates":
         return _is_redundant_coordinates(mapping.get(key), mapping)
@@ -424,7 +422,7 @@ def _normalize_run_manifest_identity_rows(
     rel_path: str,
     normalization: ParityNormalization,
 ) -> Any:
-    if not normalization.provenance_refactor:
+    if not normalization.provenance_alias_normalization:
         return value
     if key not in {"entities", "participants"} or not _is_run_manifest_document(rel_path):
         return value
@@ -463,7 +461,7 @@ def _normalize_provenance_derived_field(
     rel_path: str,
     normalization: ParityNormalization,
 ) -> bool:
-    if not normalization.provenance_refactor or not _is_provenance_document(rel_path):
+    if not normalization.provenance_alias_normalization or not _is_provenance_document(rel_path):
         return False
     if key in PROVENANCE_DERIVED_KEYS:
         return True
@@ -561,7 +559,7 @@ def _expected_publish_metric_omission(old_payload: Any, new_payload: Any) -> tup
             return (
                 "expected_old_baseline_publish_metadata_omission",
                 False,
-                "old baseline omits publish metrics that the refactored candidate now records after publish finalization",
+                "old baseline omits publish metrics that the candidate records after publish finalization",
             )
     if missing_from_old and missing_from_new:
         trimmed_old = _remove_metrics_publish_keys(old_payload, missing_from_new)

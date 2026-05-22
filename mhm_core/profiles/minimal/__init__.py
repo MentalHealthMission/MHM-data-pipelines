@@ -1,4 +1,4 @@
-"""Minimal pipeline profile for package-boundary rehearsal."""
+"""Minimal pipeline profile for package-boundary checks."""
 
 from .pipeline_plugin import MinimalPipelineProfile
 

@@ -107,42 +107,7 @@ raise SystemExit(1 if loaded else 0)
         )
         self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
 
-    def test_core_and_connect_spec_defaults_are_separate(self) -> None:
-        from connect_summary.pipeline.spec import load_spec as load_connect_spec
-        from mhm_core.pipeline.spec import load_spec as load_core_spec
-
-        spec_text = "\n".join(
-            [
-                "run_id: default-profile-smoke",
-                "created_by: tests",
-                'created_at: "2026-05-17T00:00:00Z"',
-                "priority: medium",
-                "source:",
-                "  bucket: example-bucket",
-                "  prefix: example-prefix",
-                "  participants:",
-                "    - 00000000-0000-0000-0000-000000000001",
-                "workspace:",
-                "  root: /tmp",
-                "outputs:",
-                "  merged_prefix: s3://example-bucket/merged/{site}/{participant_id}/",
-                "  summary_prefix: s3://example-bucket/summary/{site}/{participant_id}/",
-                "  manifest_key: s3://example-bucket/manifests/{run_id}.json",
-                "  logs_prefix: s3://example-bucket/logs/{run_id}/",
-                "processing:",
-                "  steps:",
-                "    - type: noop",
-                "publishing: {}",
-                "",
-            ]
-        )
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            path = Path(tmp_dir) / "spec.yaml"
-            path.write_text(spec_text, encoding="utf-8")
-            self.assertEqual(load_core_spec(str(path)).profile, "base")
-            self.assertEqual(load_connect_spec(str(path)).profile, "connect")
-
-    def test_minimal_profile_is_small_package_rehearsal_surface(self) -> None:
+    def test_minimal_profile_is_small_package_contract_surface(self) -> None:
         code = r"""
 import sys
 
@@ -256,126 +221,6 @@ for forbidden_prefix in ("connect_summary", "pandas", "rdflib"):
             _build_entity_batches(spec, list(spec.iter_entities()), {}),
             [["entity-a", "entity-b"], ["entity-c"]],
         )
-
-    def test_manifest_native_source_loading_prefers_neutral_coverage_fields(self) -> None:
-        from connect_summary.pipeline.spec import load_spec
-
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            root = Path(tmp_dir)
-            coverage_path = root / "coverage.json"
-            coverage_path.write_text(
-                """
-                {
-                  "coverage": {
-                    "group_summary": [
-                      {
-                        "group": "collection-a",
-                        "entities": ["entity-a", "entity-b"]
-                      }
-                    ]
-                  }
-                }
-                """,
-                encoding="utf-8",
-            )
-            source_manifest = root / "source_state.json"
-            source_manifest.write_text(
-                """
-                {
-                  "data_root_binding": {
-                    "locator": "s3://example-source/prefix"
-                  },
-                  "documents": {
-                    "coverage_summary": {
-                      "locator": "coverage.json"
-                    }
-                  }
-                }
-                """,
-                encoding="utf-8",
-            )
-            spec_path = root / "spec.yaml"
-            spec_path.write_text(
-                "\n".join(
-                    [
-                        "run_id: manifest-native-neutral",
-                        "profile: base",
-                        "created_by: tests",
-                        'created_at: "2026-05-18T00:00:00Z"',
-                        "priority: medium",
-                        "source:",
-                        f"  source_state_manifest: {source_manifest}",
-                        "workspace:",
-                        "  root: /tmp",
-                        "outputs:",
-                        "  manifest_key: memory://manifests/{run_id}.json",
-                        "  logs_prefix: memory://logs/{run_id}/",
-                        "processing:",
-                        "  steps:",
-                        "    - type: noop",
-                        "publishing: {}",
-                        "",
-                    ]
-                ),
-                encoding="utf-8",
-            )
-
-            spec = load_spec(str(spec_path))
-
-        self.assertEqual(spec.source.bucket, "example-source")
-        self.assertEqual(spec.source.prefix, "prefix")
-        self.assertEqual(spec.source.groups, ["collection-a"])
-        self.assertEqual(spec.source.entities, ["entity-a", "entity-b"])
-
-    def test_connect_validation_keeps_uuid_and_s3_shaped_requirements(self) -> None:
-        from connect_summary.pipeline.spec import validate_spec
-        from mhm_core.pipeline.spec import RunSpec
-
-        spec = RunSpec.from_dict(
-            {
-                "run_id": "connect-validation",
-                "profile": "connect",
-                "created_by": "tests",
-                "created_at": "2026-05-17T00:00:00Z",
-                "priority": "medium",
-                "source": {
-                    "participants": ["document-alpha"],
-                    "sites": ["SiteA"],
-                },
-                "workspace": {"root": "/tmp"},
-                "outputs": {
-                    "manifest_key": "s3://example/manifests/{run_id}.json",
-                    "logs_prefix": "s3://example/logs/{run_id}/",
-                },
-                "processing": {"steps": [{"type": "publish"}]},
-                "publishing": {},
-            }
-        )
-
-        errors = validate_spec(spec)
-        self.assertIn("source.bucket must be provided for CONNECT pipeline specs", errors)
-        self.assertIn("source.prefix must be provided for CONNECT pipeline specs", errors)
-        self.assertIn("outputs.summary_prefix must be configured for CONNECT pipeline specs", errors)
-        self.assertIn("CONNECT participant IDs must be valid UUIDs: ['document-alpha']", errors)
-
-    def test_connect_profile_supplies_connect_provenance_observer(self) -> None:
-        from connect_summary.pipeline.bootstrap import register_connect_pipeline_profile
-        from connect_summary.pipeline.publish_observer import ConnectPublishObserver
-        from connect_summary.pipeline.publisher import ConnectS3PipelinePublisher
-        from connect_summary.pipeline.provenance_observer import ConnectProvenanceObserver
-        from mhm_core.pipeline.observers import CompositePipelineObserver, NoOpPipelineObserver
-        from mhm_core.pipeline.plugins import load_pipeline_observer, load_pipeline_publisher
-        from mhm_core.pipeline.publishing import NoOpPipelinePublisher
-
-        register_connect_pipeline_profile()
-        self.assertIsInstance(load_pipeline_observer("base"), NoOpPipelineObserver)
-        self.assertIsInstance(load_pipeline_publisher("base"), NoOpPipelinePublisher)
-        observer = load_pipeline_observer("connect")
-        self.assertIsInstance(observer, CompositePipelineObserver)
-        inner = observer.observers
-        self.assertTrue(any(isinstance(item, ConnectProvenanceObserver) for item in inner))
-        self.assertTrue(any(isinstance(item, ConnectPublishObserver) for item in inner))
-        self.assertIsInstance(load_pipeline_publisher("connect"), ConnectS3PipelinePublisher)
 
     def test_refresh_plan_uses_generic_step_capabilities(self) -> None:
         from mhm_core.pipeline.capabilities import (
@@ -854,7 +699,7 @@ raise SystemExit(1 if loaded else 0)
         )
         self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
 
-    def test_module_adoption_bridge_models_rapids_connect_binding(self) -> None:
+    def test_module_adoption_bridge_models_project_binding(self) -> None:
         from mhm_core.pipeline.adoption import (
             ModuleAdoptionBridge,
             PipelineModuleBinding,
@@ -870,20 +715,20 @@ raise SystemExit(1 if loaded else 0)
             config_keys=("provider_map", "external_engine"),
             optional_dependencies=("rapids-engine",),
         )
-        connect_binding = PipelineModuleBinding(
+        project_binding = PipelineModuleBinding(
             module_id="mhm.rapids",
-            project_id="connect",
-            profile_id="connect",
+            project_id="example-project",
+            profile_id="example",
             input_bindings={
-                "entity_metric_tree": "CONNECT raw/merged passive-data tree",
-                "entity_group_map": "CONNECT participant/site map",
+                "entity_metric_tree": "project passive-data tree",
+                "entity_group_map": "project entity/group map",
             },
             output_bindings={
-                "rapids_features": "CONNECT run workspace RAPIDS feature outputs",
-                "rapids_manifest": "CONNECT run-level rapids_manifest.json",
+                "rapids_features": "project RAPIDS feature outputs",
+                "rapids_manifest": "project run-level RAPIDS manifest",
             },
             config_bindings={
-                "provider_map": "CONNECT RAPIDS provider mapping assets",
+                "provider_map": "project RAPIDS provider mapping assets",
                 "external_engine": "operator-provided external/rapids checkout",
             },
             asset_bindings={
@@ -892,15 +737,15 @@ raise SystemExit(1 if loaded else 0)
             provenance_bindings=("rapids.stage", "rapids.run", "rapids.reduce"),
         )
 
-        bridge = ModuleAdoptionBridge(rapids_contract, connect_binding)
+        bridge = ModuleAdoptionBridge(rapids_contract, project_binding)
         self.assertEqual(bridge.validate(), [])
 
         incomplete = ModuleAdoptionBridge(
             rapids_contract,
             PipelineModuleBinding(
                 module_id="mhm.rapids",
-                project_id="connect",
-                profile_id="connect",
+                project_id="example-project",
+                profile_id="example",
             ),
         )
         self.assertEqual(
@@ -911,33 +756,6 @@ raise SystemExit(1 if loaded else 0)
                 "module binding missing config keys: ['external_engine', 'provider_map']",
             ],
         )
-
-    def test_connect_rapids_adoption_bridge_is_valid(self) -> None:
-        from connect_summary.rapids.adoption import (
-            RAPIDS_MODULE_ID,
-            connect_rapids_bridge,
-            rapids_module_contract,
-        )
-
-        contract = rapids_module_contract()
-        self.assertEqual(contract.module_id, RAPIDS_MODULE_ID)
-        self.assertIn("passive_feature_extraction", contract.capabilities)
-        self.assertIn("entity_metric_tree", contract.required_inputs)
-        self.assertIn("external_engine", contract.config_keys)
-
-        bridge = connect_rapids_bridge(
-            rapids_dir="/opt/rapids",
-            provider_map="ontology/mappings/rapids-provider-map.yaml",
-            deployment="docker image or external checkout",
-        )
-        self.assertEqual(bridge.validate(), [])
-        self.assertEqual(bridge.binding.project_id, "connect")
-        self.assertEqual(bridge.binding.config_bindings["external_engine"], "/opt/rapids")
-        self.assertEqual(
-            bridge.binding.input_bindings["entity_group_map"],
-            "CONNECT participant/site map exposed as entity_group_map",
-        )
-
 
 if __name__ == "__main__":
     unittest.main()

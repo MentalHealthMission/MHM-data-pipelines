@@ -1,4 +1,4 @@
-"""Executable package-boundary checks for the MHM pipeline rehearsal."""
+"""Executable package-boundary checks for the MHM pipeline package."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from typing import Iterable
 
 @dataclass(frozen=True)
 class PackageImportContract:
-    """Import contract for one rehearsed package surface."""
+    """Import contract for one package surface."""
 
     name: str
     roots: tuple[Path, ...]

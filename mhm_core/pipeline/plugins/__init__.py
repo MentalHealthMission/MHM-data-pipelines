@@ -25,7 +25,7 @@ def register_profile_plugin(profile: str, target: PluginTarget, *, replace: bool
 
     Generic pipeline code owns the registry mechanism, but application packages
     own registration of their profiles. This keeps `mhm_core.pipeline` from
-    hard-coding CONNECT or other downstream applications.
+    hard-coding study-specific profiles into the core runtime.
     """
 
     profile_id = _normalize_profile(profile)
