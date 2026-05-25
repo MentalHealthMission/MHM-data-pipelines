@@ -247,11 +247,11 @@ class PipelineParityHarnessTests(unittest.TestCase):
             old.mkdir()
             new.mkdir()
             (old / "manifest.json").write_text(
-                json.dumps({"script": "/opt/mhm/pipeline/connect_summary/merge-data.py"}),
+                json.dumps({"script": "/opt/mhm/pipeline/jobs/merge-data.py"}),
                 encoding="utf-8",
             )
             (new / "manifest.json").write_text(
-                json.dumps({"script": "/opt/mhm/pipeline-candidate/connect_summary/merge-data.py"}),
+                json.dumps({"script": "/opt/mhm/pipeline-candidate/jobs/merge-data.py"}),
                 encoding="utf-8",
             )
 
