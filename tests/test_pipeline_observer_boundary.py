@@ -412,8 +412,20 @@ for forbidden_prefix in ("connect_summary", "pandas", "rdflib"):
         self.assertEqual(participants, entities)
         self.assertEqual(site_map, entity_group_map)
 
+    def test_base_profile_registers_optional_steps_without_importing_sibling_packages(self) -> None:
+        from mhm_core.pipeline.plugins import registered_profile_plugins
+        from mhm_core.profiles.base.pipeline_plugin import BasePipelineProfile
+
+        registry = {}
+        BasePipelineProfile().register_steps(registry)
+
+        self.assertIn("derived_features", registry)
+        self.assertIn("combine_features", registry)
+        self.assertNotIn("ontology", registered_profile_plugins())
+
     def test_feature_steps_prefer_entity_options_with_participant_aliases(self) -> None:
         import mhm_core.pipeline.integrations.derived_features as derived_module
+        import mhm_core.pipeline.integrations.rapids as rapids_module
         from mhm_core.pipeline.integrations.derived_features import DerivedFeaturesStep
         from mhm_core.pipeline.integrations.rapids import CombineFeaturesStep
 
@@ -430,7 +442,14 @@ for forbidden_prefix in ("connect_summary", "pandas", "rdflib"):
             def run_command(self, context, cmd):
                 captured.append(list(cmd))
 
-        RecordingCombine({"entities": ["entity-1"]}).run(context)
+        original_find_spec = rapids_module.find_spec
+        try:
+            rapids_module.find_spec = lambda name: object()
+            RecordingCombine({"entities": ["entity-1"]}).run(context)
+        finally:
+            rapids_module.find_spec = original_find_spec
+        self.assertIn("-m", captured[0])
+        self.assertIn("mhm_core.rapids.combine", captured[0])
         self.assertIn("--entities", captured[0])
         self.assertNotIn("--participants", captured[0])
 

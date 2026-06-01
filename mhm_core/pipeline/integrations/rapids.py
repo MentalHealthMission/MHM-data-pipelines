@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Dict
+from importlib.util import find_spec
 import sys
 
 from mhm_core.pipeline.context import RunContext, active_entities
@@ -37,9 +38,13 @@ class CombineFeaturesStep(PipelineStep):
         rapids_glob = str(self.options.get("rapids_glob", "rapids_*.csv"))
         derived_glob = str(self.options.get("derived_glob", "*.csv"))
 
+        if find_spec("mhm_core.rapids.combine") is None:
+            raise RuntimeError("combine_features requires the optional mhm-rapids package")
+
         cmd = [
             sys.executable,
-            str(Path(__file__).resolve().parents[2] / "combine_features.py"),
+            "-m",
+            "mhm_core.rapids.combine",
             "--rapids-dir",
             str(rapids_dir),
             "--derived-dir",

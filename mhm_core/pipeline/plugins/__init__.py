@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from importlib.metadata import entry_points
 from importlib import import_module
 from typing import Dict, List, Type
 
@@ -14,10 +15,10 @@ PluginTarget = str | Type[PipelineProfilePlugin]
 _BUILTIN_PLUGIN_CLASS_MAP: Dict[str, PluginTarget] = {
     "minimal": "mhm_core.profiles.minimal.pipeline_plugin:MinimalPipelineProfile",
     "base": "mhm_core.profiles.base.pipeline_plugin:BasePipelineProfile",
-    "ontology": "mhm_core.profiles.ontology.pipeline_plugin:OntologyPipelineProfile",
 }
 
 _PLUGIN_CLASS_MAP: Dict[str, PluginTarget] = dict(_BUILTIN_PLUGIN_CLASS_MAP)
+_ENTRY_POINTS_LOADED = False
 
 
 def register_profile_plugin(profile: str, target: PluginTarget, *, replace: bool = True) -> None:
@@ -39,6 +40,7 @@ def register_profile_plugin(profile: str, target: PluginTarget, *, replace: bool
 def registered_profile_plugins() -> Dict[str, PluginTarget]:
     """Return the currently registered profile plugin targets."""
 
+    _load_entry_point_plugins()
     return dict(_PLUGIN_CLASS_MAP)
 
 
@@ -47,6 +49,7 @@ def _normalize_profile(profile: str | None) -> str:
 
 
 def _load_plugin(profile: str) -> PipelineProfilePlugin:
+    _load_entry_point_plugins()
     target = _PLUGIN_CLASS_MAP.get(profile)
     if not target:
         raise ValueError(f"Unknown pipeline profile '{profile}'")
@@ -62,6 +65,22 @@ def _load_plugin(profile: str) -> PipelineProfilePlugin:
     if not isinstance(plugin, PipelineProfilePlugin):
         raise TypeError(f"Profile plugin '{target}' must implement PipelineProfilePlugin")
     return plugin
+
+
+def _load_entry_point_plugins() -> None:
+    global _ENTRY_POINTS_LOADED
+    if _ENTRY_POINTS_LOADED:
+        return
+    _ENTRY_POINTS_LOADED = True
+    discovered = entry_points()
+    if hasattr(discovered, "select"):
+        profile_entry_points = discovered.select(group="mhm_pipeline.profiles")
+    else:  # pragma: no cover - Python <3.10 compatibility
+        profile_entry_points = discovered.get("mhm_pipeline.profiles", [])
+    for entry_point in profile_entry_points:
+        profile_id = _normalize_profile(entry_point.name)
+        if profile_id and profile_id not in _PLUGIN_CLASS_MAP:
+            _PLUGIN_CLASS_MAP[profile_id] = entry_point.value
 
 
 def load_profile_plugins(profile: str | None, *, default_profile: str | None = None) -> List[PipelineProfilePlugin]:
