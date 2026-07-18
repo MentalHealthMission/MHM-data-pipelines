@@ -12,6 +12,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+semantics = [
+  "mhm-semantics @ git+https://github.com/MentalHealthMission/MHM-semantics.git@a4b4f30d645150b0f3813b02e9c9beba684a2a46",
+]
 object-store = [
   "boto3==1.35.45",
   "botocore==1.35.45",
@@ -28,4 +31,3 @@ include = [
   "mhm_core.profiles.minimal*",
 ]
 namespaces = true
-

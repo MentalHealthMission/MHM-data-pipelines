@@ -24,6 +24,7 @@ from mhm_core.ontology.reason import (
     summarize_trace,
     trace_phenotypes,
 )
+from mhm_core.ontology.rules_catalog import extract_rule_tokens
 from mhm_core.pipeline.context import RunContext, active_entities
 from mhm_core.pipeline.steps.base import PipelineStep
 
@@ -104,6 +105,9 @@ class OntologyReasonStep(PipelineStep):
         extra_tokens = self.options.get("tokens") or {}
         if isinstance(extra_tokens, dict):
             tokens.update(extra_tokens)
+        rule_tokens = self.options.get("rule_tokens") or {}
+        if not isinstance(rule_tokens, Mapping):
+            raise ValueError("ontology_reason rule_tokens must be a mapping")
 
         feature_plan = load_feature_plan(plan_path)
         feature_plan_raw = yaml.safe_load(plan_path.read_text(encoding="utf-8")) or {}
@@ -135,7 +139,20 @@ class OntologyReasonStep(PipelineStep):
                     ontology_paths=ontology_paths,
                 )
                 for rule_path in rules_paths:
-                    graph = apply_rules(graph=graph, rule_path=rule_path, tokens=tokens)
+                    declared_tokens = {item["name"] for item in extract_rule_tokens(rule_path)}
+                    inherited_tokens = {
+                        key: value for key, value in tokens.items() if key in declared_tokens
+                    }
+                    specific_tokens: Dict[str, object] = {}
+                    for key in (str(rule_path), rule_path.as_posix(), rule_path.name, rule_path.stem):
+                        candidate = rule_tokens.get(key)
+                        if isinstance(candidate, Mapping):
+                            specific_tokens.update(candidate)
+                    graph = apply_rules(
+                        graph=graph,
+                        rule_path=rule_path,
+                        tokens={**inherited_tokens, **specific_tokens},
+                    )
 
                 ttl_path = entity_out / "ontology.ttl"
                 graph.serialize(destination=str(ttl_path), format="turtle")
@@ -290,7 +307,7 @@ def _parse_date_token(value: Any) -> str:
     text = str(value or "").strip()
     if not text:
         return ""
-    # Some metric streams store epoch seconds in value.time/value.endTime.
+    # Some CONNECT metrics store epoch seconds in value.time/value.endTime.
     try:
         ts = float(text)
         if ts > 10_000_000:  # guard against small non-epoch numeric values

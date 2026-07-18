@@ -75,6 +75,16 @@ class OntologySelectStep(PipelineStep):
         tokens = {
             "run_id": context.run_id,
             "workspace_dir": str(context.workspace_dir),
+            "derived_features_dir": str(
+                Path(
+                    str(
+                        self.options.get(
+                            "derived_features_dir",
+                            context.workspace_dir / "derived_features",
+                        )
+                    )
+                ).expanduser()
+            ),
         }
         rendered: list[UnificationFeature] = []
         for feature in selected:
